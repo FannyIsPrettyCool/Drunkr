@@ -321,6 +321,11 @@ export class RemotePlayers {
     for (const r of this.players.values()) r.render(renderTime, dt);
   }
 
+  clear() {
+    for (const r of this.players.values()) r.dispose(this.scene);
+    this.players.clear();
+  }
+
   hittables(): { mesh: THREE.Object3D; id: number }[] {
     const out: { mesh: THREE.Object3D; id: number }[] = [];
     for (const [id, r] of this.players) {

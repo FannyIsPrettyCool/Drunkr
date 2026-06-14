@@ -74,8 +74,9 @@ export class CollisionWorld {
 
   /** Surface height of a ramp under `pos`, or null if not over any ramp. */
   rampGround(pos: Vec3): number | null {
+    const m = 0.25; // margin prevents gap-glitches at ramp edge transitions
     for (const r of this.ramps) {
-      if (pos.x <= r.minX || pos.x >= r.maxX || pos.z <= r.minZ || pos.z >= r.maxZ) continue;
+      if (pos.x < r.minX - m || pos.x > r.maxX + m || pos.z < r.minZ - m || pos.z > r.maxZ + m) continue;
       let t: number; // 0 at low edge, 1 at high edge
       if (r.dir === 0) t = (pos.x - r.minX) / (r.maxX - r.minX);
       else if (r.dir === 1) t = (r.maxX - pos.x) / (r.maxX - r.minX);

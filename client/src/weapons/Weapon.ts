@@ -20,6 +20,8 @@ export interface WeaponCallbacks {
   onScope: (active: boolean) => void;
   /** A shot was fired (for sound), with the weapon id. */
   onShoot: (weaponId: string) => void;
+  /** A bullet hit a wall/surface at this world position (first hit per shot). */
+  onWallHit?: (pos: { x: number; y: number; z: number }) => void;
 }
 
 /**
@@ -33,6 +35,7 @@ export class Weapon {
   /** Persisted ammo per weapon id so switching doesn't refill. */
   private ammoByWeapon: Record<string, number> = {};
   private reloading = false;
+  private reloadDelayTimer = 0;
   private cooldown = 0;
   private reloadTimer = 0;
   private wasFiring = false;
@@ -84,6 +87,10 @@ export class Weapon {
   }
 
   /** Switch to a different weapon by id. Returns whether it changed. */
+  setColliders(colliders: THREE.Object3D[]) {
+    this.colliders = colliders;
+  }
+
   switchTo(id: string): boolean {
     const def = WEAPONS[id];
     if (!def || def.id === this.def.id) return false;
@@ -194,11 +201,13 @@ export class Weapon {
     this.ammo = this.def.magazine;
     this.reloading = false;
     this.reloadTimer = 0;
+    this.reloadDelayTimer = 0;
     this.cb.onAmmo(this.ammo, this.def.magazine);
   }
 
   reload() {
     if (this.reloading || this.ammo === this.def.magazine) return;
+    this.reloadDelayTimer = 0;
     this.reloading = true;
     this.reloadTimer = this.def.reloadMs / 1000;
   }
@@ -225,8 +234,17 @@ export class Weapon {
       this.fire();
     }
 
-    // Auto-reload when empty (also racks the lever-action sniper). Melee has no mag.
-    if (this.def.magazine > 0 && this.ammo === 0 && !this.reloading) this.reload();
+    // Auto-reload when empty — delayed so the shot sound finishes before the reload sound starts.
+    if (this.def.magazine > 0 && this.ammo === 0 && !this.reloading) {
+      if (this.reloadDelayTimer > 0) {
+        this.reloadDelayTimer -= dt;
+        if (this.reloadDelayTimer <= 0) this.reload();
+      } else {
+        this.reloadDelayTimer = 0.3;
+      }
+    } else if (this.ammo > 0) {
+      this.reloadDelayTimer = 0;
+    }
 
     const progress = this.reloading
       ? 1 - this.reloadTimer / (this.def.reloadMs / 1000)
@@ -269,6 +287,7 @@ export class Weapon {
     const dirs: { x: number; y: number; z: number }[] = [];
     let anyHit = false;
     let anyHead = false;
+    let wallHitPoint: THREE.Vector3 | undefined;
 
     for (let i = 0; i < pellets; i++) {
       const dir = forward.clone();
@@ -280,6 +299,11 @@ export class Weapon {
 
       const r = this.castRay(origin, dir);
       if (r.hit) { anyHit = true; anyHead = anyHead || r.head; }
+      if (!wallHitPoint && r.wallPoint) wallHitPoint = r.wallPoint;
+    }
+
+    if (wallHitPoint && !this.def.melee) {
+      this.cb.onWallHit?.({ x: wallHitPoint.x, y: wallHitPoint.y, z: wallHitPoint.z });
     }
 
     if (this.def.melee) {
@@ -311,7 +335,7 @@ export class Weapon {
   }
 
   /** Cast one pellet locally for tracer + hit feedback. Returns hit info. */
-  private castRay(origin: THREE.Vector3, dir: THREE.Vector3): { hit: boolean; head: boolean } {
+  private castRay(origin: THREE.Vector3, dir: THREE.Vector3): { hit: boolean; head: boolean; wallPoint?: THREE.Vector3 } {
     this.raycaster.set(origin, dir);
     this.raycaster.far = this.def.range;
 
@@ -333,11 +357,15 @@ export class Weapon {
         head = pPos ? hitPoint.y - pPos.y > MOVE.height * 0.78 : false;
       }
     }
-    if (Number.isFinite(wallDist) && wallDist < hitDist) hitPoint = wallHits[0].point.clone();
+    let wallPoint: THREE.Vector3 | undefined;
+    if (Number.isFinite(wallDist) && wallDist < hitDist) {
+      hitPoint = wallHits[0].point.clone();
+      wallPoint = hitPoint.clone();
+    }
 
     // Melee swings don't draw bullet tracers.
     if (!this.def.melee) this.spawnTracer(origin, dir, hitPoint);
-    return { hit: hitId >= 0, head };
+    return { hit: hitId >= 0, head, wallPoint };
   }
 
   /** Render a tracer for a shot fired by another player. */

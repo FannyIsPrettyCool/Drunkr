@@ -132,6 +132,12 @@ export interface C_Ability {
   dir?: Vec3;
 }
 
+/** Cast or change a map vote during intermission. */
+export interface C_VoteMap {
+  t: "vote";
+  mapId: string;
+}
+
 export type ClientMessage =
   | C_Join
   | C_Create
@@ -141,7 +147,8 @@ export type ClientMessage =
   | C_Respawn
   | C_Fell
   | C_SwitchWeapon
-  | C_Ability;
+  | C_Ability
+  | C_VoteMap;
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -233,13 +240,35 @@ export interface S_Explosion {
   pos: Vec3;
 }
 
-/** The match timer expired; highest kills wins, scores reset, next round starts. */
-export interface S_MatchEnd {
-  t: "matchend";
-  winner: number;
-  name: string;
-  /** Server-clock timestamp (ms) when the next match ends. */
+/** 15-second intermission between rounds: shows winner, scores, and a map vote. */
+export interface S_Intermission {
+  t: "intermission";
+  winnerName: string;
+  /** Server-clock timestamp (ms) when intermission ends and the next match starts. */
   endsAt: number;
+  /** Three maps players can vote for. */
+  mapOptions: { id: string; name: string }[];
+  /** Final scores snapshot so clients can show the scoreboard. */
+  scores: PlayerState[];
+}
+
+/** Live vote-tally update broadcast whenever any player casts or changes their vote. */
+export interface S_VoteUpdate {
+  t: "voteupdate";
+  /** mapId -> vote count for each option. */
+  votes: Record<string, number>;
+}
+
+/** Sent after intermission to restart the match (possibly on a new map). */
+export interface S_MatchRestart {
+  t: "matchrestart";
+  mapId: string;
+  /** Server-clock timestamp (ms) when the new match ends. */
+  matchEndsAt: number;
+  /** Present when the new map is a custom (editor) map. */
+  mapData?: GameMap;
+  /** Fresh player list with reset scores and new spawn positions. */
+  players: PlayerState[];
 }
 
 export type ServerMessage =
@@ -252,7 +281,9 @@ export type ServerMessage =
   | S_Kill
   | S_Shot
   | S_Respawn
-  | S_MatchEnd
+  | S_Intermission
+  | S_VoteUpdate
+  | S_MatchRestart
   | S_ForceWeapon
   | S_Explosion;
 

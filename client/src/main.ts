@@ -1,5 +1,6 @@
 import { Network } from "./net/Network.js";
 import { Game } from "./core/Game.js";
+import { Music } from "./audio/Music.js";
 import { settings, saveSettings, type Settings } from "./core/Settings.js";
 import type { RoomInfo, BotDifficulty } from "@drunkr/shared";
 
@@ -92,6 +93,33 @@ setShowFps.addEventListener("change", () => {
   saveSettings();
 });
 
+const setMusicOn = document.getElementById("set-music-on") as HTMLInputElement;
+const setMusicVol = document.getElementById("set-music-vol") as HTMLInputElement;
+const setMusicVal = document.getElementById("set-music-val")!;
+
+setMusicOn.checked = settings.musicEnabled;
+setMusicVol.value = String(Math.round(settings.musicVolume * 100));
+setMusicVal.textContent = setMusicVol.value;
+
+setMusicOn.addEventListener("change", () => {
+  settings.musicEnabled = setMusicOn.checked;
+  music.setEnabled(settings.musicEnabled);
+  saveSettings();
+  // Keep in-game pause menu in sync.
+  const el = document.getElementById("pm-music-on") as HTMLInputElement | null;
+  if (el) el.checked = settings.musicEnabled;
+});
+setMusicVol.addEventListener("input", () => {
+  const v = Number(setMusicVol.value);
+  setMusicVal.textContent = String(v);
+  settings.musicVolume = v / 100;
+  music.setVolume(settings.musicVolume);
+  saveSettings();
+  const el = document.getElementById("pm-music-vol") as HTMLInputElement | null;
+  if (el) { el.value = String(v); (document.getElementById("pm-music-val")!).textContent = String(v); }
+});
+
+const music = new Music(settings.musicEnabled, settings.musicVolume);
 const net = new Network();
 let game: Game | null = null;
 let connecting = false;
@@ -201,7 +229,7 @@ nameInput.addEventListener("keydown", (e) => {
 net.on((msg) => {
   if (msg.t === "roomlist") renderRooms(msg.rooms);
   if (msg.t === "welcome" && !game) {
-    game = new Game(canvas, net, msg);
+    game = new Game(canvas, net, msg, music);
     menu.classList.add("hidden");
     window.clearInterval(refreshTimer);
     game.start();

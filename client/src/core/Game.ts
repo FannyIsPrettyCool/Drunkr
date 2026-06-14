@@ -2,6 +2,7 @@ import * as THREE from "three";
 import {
   CLIENT_SEND_RATE,
   MAPS,
+  MOVE,
   PLAYER,
   WEAPONS,
   CLASSES,
@@ -15,6 +16,8 @@ import {
   type AbilityId,
   type PlayerState,
   type S_Welcome,
+  type S_Intermission,
+  type S_MatchRestart,
   type ServerMessage,
 } from "@drunkr/shared";
 import { Renderer } from "../render/Renderer.js";
@@ -25,6 +28,7 @@ import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
 import { HUD } from "../ui/HUD.js";
 import { Sfx } from "../audio/Sfx.js";
+import { Music } from "../audio/Music.js";
 import { settings, QUALITY_HEIGHT } from "./Settings.js";
 import type { Network } from "../net/Network.js";
 
@@ -37,8 +41,23 @@ export class Game {
   private input: Input;
   private hud: HUD;
   private sfx = new Sfx();
+  private music: Music | null = null;
+  private musicStarted = false;
+
+  // Pause / death menu DOM refs.
+  private pauseMenu = document.getElementById("pause-menu")!;
+  private pmTitle = document.getElementById("pm-title")!;
+  private pmName = document.getElementById("pm-name") as HTMLInputElement;
+  private pmClass = document.getElementById("pm-class") as HTMLSelectElement;
+  private pmSkinsEl = document.getElementById("pm-skins")!;
+  private pmResumeBtn = document.getElementById("pm-resume") as HTMLButtonElement;
+  private pmMusicOn = document.getElementById("pm-music-on") as HTMLInputElement;
+  private pmMusicVol = document.getElementById("pm-music-vol") as HTMLInputElement;
+  private pmMusicVal = document.getElementById("pm-music-val")!;
+  private pmSelectedHue = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
 
   private localId: number;
+  private currentMapId: string;
   private roster = new Map<number, PlayerState>();
   private lastFrame = performance.now();
   private sendAccum = 0;
@@ -54,13 +73,27 @@ export class Game {
   /** Live grenade meshes by projectile id. */
   private projMeshes = new Map<number, THREE.Mesh>();
   private losRay = new THREE.Raycaster();
+  private footstepTimer = 0;
+
+  // Intermission overlay refs.
+  private interEl = document.getElementById("inter")!;
+  private interWinner = document.getElementById("inter-winner")!;
+  private interCountdown = document.getElementById("inter-countdown")!;
+  private interScoreBody = document.getElementById("inter-score-body")!;
+  private interVoteBtns = document.getElementById("inter-vote-btns")!;
+  private inIntermission = false;
+  private interEndsAt = 0;
+  private interVoteMaps: { id: string; name: string }[] = [];
 
   constructor(
     canvas: HTMLCanvasElement,
     private net: Network,
     welcome: S_Welcome,
+    music?: Music,
   ) {
+    this.music = music ?? null;
     this.localId = welcome.id;
+    this.currentMapId = welcome.mapId;
     this.matchEndsAt = welcome.matchEndsAt;
     // Custom (editor) maps arrive inline; built-ins are looked up by id.
     const map = welcome.mapData ?? MAPS[welcome.mapId] ?? MAPS.neon_yard;
@@ -88,11 +121,12 @@ export class Game {
         onHit: (head) => this.hud.hitmark(head),
         onReloadState: (active, progress) => {
           this.hud.setReload(active, progress);
-          if (active && progress < 0.05) this.sfx.reload();
+          if (active && progress < 0.05) this.sfx.reload(this.weapon.def.id);
         },
         onWeapon: (name) => this.hud.setWeapon(name),
         onScope: (active) => this.hud.setScope(active),
         onShoot: (id) => this.sfx.shoot(id),
+        onWallHit: (pos) => this.sfx.bulletImpact(pos.x, pos.y, pos.z),
       },
     );
 
@@ -100,8 +134,21 @@ export class Game {
     this.input.onSwitch = (id) => this.switchWeapon(id);
     this.input.onAbility = (slot) => this.useAbility(slot);
     this.input.onLockChange = (locked) => {
-      if (locked) this.sfx.resume();
+      if (locked) {
+        this.sfx.resume();
+        const ctx = this.sfx.getContext();
+        if (ctx && this.music) this.music.connectContext(ctx);
+        if (!this.musicStarted && this.music) {
+          this.musicStarted = true;
+          this.music.start();
+        }
+        this.sfx.startAmbience();
+        this.hidePauseMenu();
+      } else if (!this.local.dead) {
+        this.showPauseMenu(false);
+      }
     };
+    this.initPauseMenu();
 
     // Seed roster and spawn from the welcome payload.
     for (const p of welcome.players) {
@@ -122,6 +169,77 @@ export class Game {
     // Dev-only debug handle for inspecting/poking the running game.
     if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = this;
   }
+
+  // ---- Pause / death menu -----------------------------------------------
+
+  private initPauseMenu() {
+    // Pre-fill name and class from localStorage.
+    this.pmName.value = localStorage.getItem("drunkr.name") ?? "";
+    this.pmClass.value = localStorage.getItem("drunkr.class") ?? "wind";
+
+    // Build skin swatches.
+    const SKIN_HUES = [0.0, 0.08, 0.13, 0.33, 0.5, 0.58, 0.75, 0.85];
+    for (const hue of SKIN_HUES) {
+      const btn = document.createElement("button");
+      btn.className = "skin";
+      btn.style.background = `hsl(${hue * 360}, 85%, 55%)`;
+      if (Math.abs(hue - this.pmSelectedHue) < 0.001) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        this.pmSelectedHue = hue;
+        localStorage.setItem("drunkr.skin", String(hue));
+        this.pmSkinsEl.querySelectorAll(".skin").forEach((s) => s.classList.remove("active"));
+        btn.classList.add("active");
+      });
+      this.pmSkinsEl.appendChild(btn);
+    }
+
+    // Name changes save immediately.
+    this.pmName.addEventListener("input", () => {
+      const n = this.pmName.value.trim();
+      if (n) localStorage.setItem("drunkr.name", n);
+    });
+
+    // Class changes save immediately.
+    this.pmClass.addEventListener("change", () =>
+      localStorage.setItem("drunkr.class", this.pmClass.value));
+
+    // Music controls.
+    this.pmMusicOn.checked = settings.musicEnabled;
+    this.pmMusicVol.value = String(Math.round(settings.musicVolume * 100));
+    this.pmMusicVal.textContent = this.pmMusicVol.value;
+
+    this.pmMusicOn.addEventListener("change", () => {
+      settings.musicEnabled = this.pmMusicOn.checked;
+      this.music?.setEnabled(settings.musicEnabled);
+      // Keep the main-menu toggle in sync.
+      const el = document.getElementById("set-music-on") as HTMLInputElement | null;
+      if (el) el.checked = settings.musicEnabled;
+    });
+    this.pmMusicVol.addEventListener("input", () => {
+      const v = Number(this.pmMusicVol.value);
+      this.pmMusicVal.textContent = String(v);
+      settings.musicVolume = v / 100;
+      this.music?.setVolume(settings.musicVolume);
+      const el = document.getElementById("set-music-vol") as HTMLInputElement | null;
+      if (el) { el.value = String(v); (document.getElementById("set-music-val")!).textContent = String(v); }
+    });
+
+    // Resume button re-locks the pointer (which hides the menu via onLockChange).
+    this.pmResumeBtn.addEventListener("click", () => this.input.requestLock());
+  }
+
+  private showPauseMenu(isDead: boolean) {
+    this.pmTitle.textContent = isDead ? "ELIMINATED" : "PAUSED";
+    this.pmTitle.style.color = isDead ? "var(--neon-pink)" : "var(--neon-cyan)";
+    this.pmResumeBtn.classList.toggle("hidden", isDead);
+    this.pauseMenu.classList.remove("hidden");
+  }
+
+  private hidePauseMenu() {
+    this.pauseMenu.classList.add("hidden");
+  }
+
+  // ---- Game lifecycle -------------------------------------------------------
 
   start() {
     this.hud.show();
@@ -166,6 +284,7 @@ export class Game {
           this.local.dead = true;
           this.hud.setDead(true);
           this.sfx.death();
+          this.showPauseMenu(true);
         }
         break;
       }
@@ -176,10 +295,8 @@ export class Game {
             this.weapon.remoteShot(o, new THREE.Vector3(dir.x, dir.y, dir.z));
           }
         }
-        // Positional-ish volume by distance to the shooter.
-        const sp = this.remotes.position(msg.from);
-        const dist = sp ? sp.distanceTo(this.local.pos) : 999;
-        if (dist < 60) this.sfx.remoteShoot(msg.weapon);
+        // True 3D positional audio — PannerNode handles distance falloff.
+        this.sfx.remoteShootAt(msg.weapon, msg.origin.x, msg.origin.y, msg.origin.z);
         break;
       }
       case "forceweapon":
@@ -194,9 +311,14 @@ export class Game {
       case "explosion":
         this.onExplosion(msg.kind, new THREE.Vector3(msg.pos.x, msg.pos.y, msg.pos.z));
         break;
-      case "matchend":
-        this.matchEndsAt = msg.endsAt;
-        this.hud.showIntermission(msg.name);
+      case "intermission":
+        this.showIntermission(msg);
+        break;
+      case "voteupdate":
+        this.updateVotes(msg.votes);
+        break;
+      case "matchrestart":
+        this.restartFromMap(msg);
         break;
       case "respawned":
         if (msg.id === this.localId) {
@@ -206,9 +328,102 @@ export class Game {
           this.hud.setDead(false);
           this.hud.setHealth(msg.health);
           this.weapon.resetAmmo(); // respawn with fresh mags
+          // If pause menu is open (death state), switch it to PAUSED so player
+          // can choose when to resume instead of being force-relocked.
+          if (!this.pauseMenu.classList.contains("hidden")) {
+            this.showPauseMenu(false);
+          }
         }
         break;
     }
+  }
+
+  // ---- Intermission --------------------------------------------------------
+
+  private showIntermission(msg: S_Intermission) {
+    this.inIntermission = true;
+    this.interEndsAt = msg.endsAt;
+    this.interVoteMaps = msg.mapOptions;
+
+    this.interWinner.textContent = `${msg.winnerName} WINS`;
+
+    const sorted = [...msg.scores].sort((a, b) => b.kills - a.kills);
+    this.interScoreBody.innerHTML = sorted
+      .map((p) => `<tr class="${p.id === this.localId ? "me" : ""}"><td>${p.name}</td><td class="r">${p.kills}</td><td class="r">${p.deaths}</td></tr>`)
+      .join("");
+
+    this.interVoteBtns.innerHTML = "";
+    for (const map of msg.mapOptions) {
+      const btn = document.createElement("button");
+      btn.className = "vote-btn";
+      btn.dataset.mapId = map.id;
+      btn.innerHTML = `<span>${map.name}</span><span class="vote-count">0</span>`;
+      btn.addEventListener("click", () => this.castVote(map.id));
+      this.interVoteBtns.appendChild(btn);
+    }
+
+    this.interEl.classList.remove("hidden");
+    document.exitPointerLock?.();
+  }
+
+  private castVote(mapId: string) {
+    this.net.send({ t: "vote", mapId });
+    for (const btn of this.interVoteBtns.querySelectorAll<HTMLElement>(".vote-btn")) {
+      btn.classList.toggle("voted", btn.dataset.mapId === mapId);
+    }
+  }
+
+  private updateVotes(votes: Record<string, number>) {
+    for (const btn of this.interVoteBtns.querySelectorAll<HTMLElement>(".vote-btn")) {
+      const count = votes[btn.dataset.mapId ?? ""] ?? 0;
+      btn.querySelector(".vote-count")!.textContent = String(count);
+    }
+  }
+
+  private restartFromMap(msg: S_MatchRestart) {
+    this.inIntermission = false;
+    this.interEl.classList.add("hidden");
+    this.matchEndsAt = msg.matchEndsAt;
+
+    const map = msg.mapData ?? MAPS[msg.mapId] ?? MAPS.neon_yard;
+    if (msg.mapId !== this.currentMapId || msg.mapData) {
+      this.currentMapId = msg.mapId;
+      this.renderer.scene.remove(this.arena.group);
+      this.arena.group.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+      this.arena = new Arena(map);
+      this.renderer.scene.add(this.arena.group);
+      this.weapon.setColliders(this.arena.colliders);
+      this.local.setWorld(this.arena.collision);
+    }
+
+    for (const mesh of this.projMeshes.values()) {
+      this.renderer.scene.remove(mesh);
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    }
+    this.projMeshes.clear();
+
+    this.roster.clear();
+    this.remotes.clear();
+    for (const p of msg.players) {
+      this.roster.set(p.id, p);
+      if (p.id === this.localId) {
+        this.local.spawn(p.pos.x, p.pos.y, p.pos.z);
+        this.local.dead = false;
+        this.fellSent = false;
+        this.hud.setDead(false);
+        this.hud.setHealth(p.health);
+        this.weapon.resetAmmo();
+      } else {
+        this.remotes.add(p);
+      }
+    }
+    this.input.requestLock();
   }
 
   private switchWeapon(id: string) {
@@ -260,35 +475,36 @@ export class Game {
         break;
       case "updraft":
         this.local.applyImpulse(0, UPDRAFT.vy, 0);
-        this.sfx.dash();
+        this.sfx.updraft();
         break;
       case "invis":
         this.net.send({ t: "ability", ability: "invis" });
         this.startInvis();
+        this.sfx.cloak();
         break;
       case "confusion":
         this.net.send({ t: "ability", ability: "confusion", origin: this.eyePos() });
-        this.sfx.switchWeapon();
+        this.sfx.confuse();
         break;
       case "flash":
       case "frag": {
         const { o, d } = this.aimRay();
         this.net.send({ t: "ability", ability: id, origin: o, dir: d });
-        this.sfx.dash();
+        if (id === "flash") this.sfx.flashAbility(); else this.sfx.fragThrow();
         break;
       }
       case "blink":
         this.local.blink(BLINK.dist);
-        this.sfx.dash();
+        this.sfx.blink();
         break;
       case "fortify":
         this.net.send({ t: "ability", ability: "fortify" });
-        this.sfx.reload();
+        this.sfx.fortify();
         break;
       case "shockwave":
         this.net.send({ t: "ability", ability: "shockwave" });
-        this.local.applyImpulse(0, SHOCKWAVE.selfVy, 0); // small self-leap
-        this.sfx.boom();
+        this.local.applyImpulse(0, SHOCKWAVE.selfVy, 0);
+        this.sfx.shockwave();
         break;
     }
     if (used) this.abilityCd[id] = now + def.cooldownMs;
@@ -328,7 +544,7 @@ export class Game {
   }
 
   private onExplosion(kind: "flash" | "frag", pos: THREE.Vector3) {
-    this.sfx.boom();
+    this.sfx.boomAt(pos.x, pos.y, pos.z);
     const color = kind === "frag" ? 0xff7a3d : 0xffffff;
     const radius = kind === "frag" ? GRENADE.fragRadius : 5;
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
@@ -414,6 +630,15 @@ export class Game {
     this.fps = this.fps * 0.9 + (1 / Math.max(dt, 0.001)) * 0.1;
     this.hud.setFps(settings.showFps ? Math.round(this.fps) : null);
 
+    // Update 3D audio listener to match the camera.
+    {
+      const camPos = new THREE.Vector3();
+      const camFwd = new THREE.Vector3();
+      this.renderer.camera.getWorldPosition(camPos);
+      this.renderer.camera.getWorldDirection(camFwd);
+      this.sfx.updateListener(camPos.x, camPos.y, camPos.z, camFwd.x, camFwd.y, camFwd.z);
+    }
+
     // Look — sensitivity from settings, reduced while scoped.
     this.local.sensMul = settings.sensitivity * (this.weapon.scoped ? settings.scopedSens : 1);
     if (this.input.locked) {
@@ -425,6 +650,20 @@ export class Game {
     if (mv.jumped) this.sfx.jump();
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
+
+    // Footsteps: play periodically while moving on the ground (not sliding).
+    if (!this.local.dead && this.local.grounded && !this.local.sliding) {
+      const spd = Math.hypot(this.local.vel.x, this.local.vel.z);
+      if (spd > 1.5) {
+        this.footstepTimer -= dt;
+        if (this.footstepTimer <= 0) {
+          this.sfx.footstep();
+          this.footstepTimer = 0.38 * (MOVE.speed / Math.max(spd, 3));
+        }
+      } else {
+        this.footstepTimer = 0.1;
+      }
+    }
     // Fell into the void → tell the server (it registers the death).
     if (!this.local.dead && this.local.pos.y < -30 && !this.fellSent) {
       this.fellSent = true;
@@ -432,8 +671,9 @@ export class Game {
       this.hud.setDead(true);
       this.sfx.death();
       this.net.send({ t: "fell" });
+      this.showPauseMenu(true);
     }
-    this.weapon.update(dt, this.input.firing && this.input.locked, this.input.ads);
+    this.weapon.update(dt, !this.inIntermission && this.input.firing && this.input.locked, this.input.ads);
     this.remotes.update(dt);
     this.updateAbilityHud();
 
@@ -456,7 +696,12 @@ export class Game {
       this.localId,
     );
 
-    const remainingMs = this.matchEndsAt - (Date.now() + this.clockOffset);
+    if (this.inIntermission) {
+      const secsLeft = Math.max(0, Math.ceil((this.interEndsAt - Date.now()) / 1000));
+      this.interCountdown.textContent = String(secsLeft);
+    }
+
+    const remainingMs = this.inIntermission ? 0 : this.matchEndsAt - (Date.now() + this.clockOffset);
     this.hud.setTimer(remainingMs);
 
     this.renderer.render();

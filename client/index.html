@@ -50,6 +50,61 @@
       <div id="scoreboard" class="hidden"></div>
     </div>
 
+    <!-- Intermission / map-vote overlay (pointer-events enabled) -->
+    <div id="inter" class="hidden">
+      <div class="inter-inner">
+        <div class="inter-header">
+          <span class="inter-label">ROUND OVER</span>
+          <div id="inter-countdown">15</div>
+        </div>
+        <div id="inter-winner"></div>
+        <div class="inter-body">
+          <div class="inter-scores-col">
+            <div class="inter-col-label">SCOREBOARD</div>
+            <table>
+              <thead><tr><th>PLAYER</th><th class="r">K</th><th class="r">D</th></tr></thead>
+              <tbody id="inter-score-body"></tbody>
+            </table>
+          </div>
+          <div class="inter-vote-col">
+            <div class="inter-col-label">VOTE NEXT MAP</div>
+            <div id="inter-vote-btns"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- In-game pause / death menu -->
+    <div id="pause-menu" class="hidden">
+      <div class="pm-card">
+        <div id="pm-title">PAUSED</div>
+
+        <input id="pm-name" maxlength="16" placeholder="callsign" autocomplete="off" />
+
+        <div class="pm-section-label">SKIN</div>
+        <div id="pm-skins"></div>
+
+        <div class="pm-section-label">CLASS</div>
+        <select id="pm-class">
+          <option value="wind">Wind Master · dash / updraft</option>
+          <option value="illusionist">Illusionist · cloak / confuse</option>
+          <option value="cyborg">Cyborg · flash / frag</option>
+          <option value="juggernaut">Juggernaut · fortify / shockwave</option>
+          <option value="phantom">Phantom · blink / cloak</option>
+        </select>
+
+        <div class="pm-music">
+          <label class="check"><input type="checkbox" id="pm-music-on" checked /> Music</label>
+          <label class="pm-vol-label">VOL <span id="pm-music-val">50</span>%
+            <input type="range" id="pm-music-vol" min="0" max="100" step="5" value="50" />
+          </label>
+        </div>
+
+        <button id="pm-resume" class="primary">RESUME</button>
+        <p class="hint pm-hint">Class &amp; skin apply on next game.</p>
+      </div>
+    </div>
+
     <!-- Lobby -->
     <div id="menu">
       <div class="menu-card">
@@ -146,6 +201,12 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" id="set-showfps" /> Show FPS counter</label>
+          <div class="set-row">
+            <label class="check"><input type="checkbox" id="set-music-on" checked /> Music</label>
+            <label class="field set-music-vol">VOLUME <span id="set-music-val">50</span>%
+              <input type="range" id="set-music-vol" min="0" max="100" step="5" value="50" />
+            </label>
+          </div>
           <p class="hint">Settings save automatically and apply next time you drop in.</p>
         </div>
 

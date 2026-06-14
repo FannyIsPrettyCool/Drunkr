@@ -112,6 +112,14 @@ interface Room {
   /** Server-clock timestamp (ms) when the current match ends. */
   matchEndsAt: number;
   projectiles: Projectile[];
+  /** True while in the 15-second intermission / map vote between rounds. */
+  intermission: boolean;
+  intermissionEndsAt: number;
+  intermissionWinner: string;
+  /** The three map options currently up for vote. */
+  voteMaps: string[];
+  /** actorId -> voted mapId. */
+  mapVotes: Map<number, string>;
 }
 
 let nextProjId = 1;
@@ -186,6 +194,11 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     persistent,
     matchEndsAt: Date.now() + MATCH.durationMs,
     projectiles: [],
+    intermission: false,
+    intermissionEndsAt: 0,
+    intermissionWinner: "",
+    voteMaps: [],
+    mapVotes: new Map(),
   };
   rooms.set(id, room);
   for (let i = 0; i < room.botCount; i++) spawnBot(room);
@@ -487,24 +500,81 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
   }
 }
 
-/** End the round: highest kills wins, scores reset, the timer restarts. */
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** End the round: start 15-second intermission with map vote. */
 function endMatch(room: Room) {
+  if (room.intermission) return;
   let winner: Actor | null = null;
   for (const a of room.actors.values()) {
     if (!winner || a.state.kills > winner.state.kills) winner = a;
   }
-  room.matchEndsAt = Date.now() + MATCH.durationMs;
+  const allMaps = Object.keys(MAPS).filter((id) => id !== room.mapId);
+  room.voteMaps = shuffle(allMaps).slice(0, 3);
+  if (room.voteMaps.length === 0) room.voteMaps = [DEFAULT_MAP];
+  room.mapVotes = new Map();
+  room.intermission = true;
+  room.intermissionEndsAt = Date.now() + MATCH.intermissionMs;
+  room.intermissionWinner = winner ? winner.state.name : "nobody";
   broadcast(room, {
-    t: "matchend",
-    winner: winner ? winner.id : -1,
-    name: winner ? winner.state.name : "nobody",
-    endsAt: room.matchEndsAt,
+    t: "intermission",
+    winnerName: room.intermissionWinner,
+    endsAt: room.intermissionEndsAt,
+    mapOptions: room.voteMaps.map((id) => ({ id, name: MAPS[id].name })),
+    scores: [...room.actors.values()].map((a) => a.state),
   });
+}
+
+/** Called when intermission ends: switch map if voted, reset all actors. */
+function startNextMatch(room: Room) {
+  const tally = new Map<string, number>();
+  for (const id of room.voteMaps) tally.set(id, 0);
+  for (const mapId of room.mapVotes.values()) tally.set(mapId, (tally.get(mapId) ?? 0) + 1);
+  let nextMapId = room.voteMaps[0] ?? DEFAULT_MAP;
+  let bestVotes = -1;
+  for (const [id, cnt] of tally) {
+    if (cnt > bestVotes) { bestVotes = cnt; nextMapId = id; }
+  }
+
+  if (nextMapId !== room.mapId || room.customMap) {
+    room.mapId = nextMapId;
+    room.map = MAPS[nextMapId];
+    room.customMap = undefined;
+    room.world = new CollisionWorld(room.map);
+  }
+
+  room.intermission = false;
+  room.intermissionEndsAt = 0;
+  room.voteMaps = [];
+  room.mapVotes = new Map();
+  room.matchEndsAt = Date.now() + MATCH.durationMs;
+  room.projectiles = [];
+
   for (const a of room.actors.values()) {
     a.state.kills = 0;
     a.state.deaths = 0;
-    respawn(room, a); // fresh start for the new round
+    const s = pickSpawn(room);
+    a.state.pos = { x: s.x, y: s.y, z: s.z };
+    a.state.health = PLAYER.maxHealth;
+    a.state.dead = false;
+    a.vel = { x: 0, y: 0, z: 0 };
+    a.grounded = false;
+    if (a.ai) { a.ai.ammo = weaponOf(a).magazine; a.ai.reloadUntil = 0; }
   }
+
+  broadcast(room, {
+    t: "matchrestart",
+    mapId: room.mapId,
+    matchEndsAt: room.matchEndsAt,
+    players: [...room.actors.values()].map((a) => a.state),
+  });
 }
 
 function respawn(room: Room, a: Actor) {
@@ -709,6 +779,19 @@ wss.on("connection", (ws) => {
       ...(target.customMap ? { mapData: target.customMap } : {}),
       players: [...target.actors.values()].map((a) => a.state),
     });
+    if (target.intermission) {
+      send(ws, {
+        t: "intermission",
+        winnerName: target.intermissionWinner,
+        endsAt: target.intermissionEndsAt,
+        mapOptions: target.voteMaps.map((mid) => ({ id: mid, name: MAPS[mid].name })),
+        scores: [...target.actors.values()].map((a) => a.state),
+      });
+      const votes: Record<string, number> = {};
+      for (const mid of target.voteMaps) votes[mid] = 0;
+      for (const v of target.mapVotes.values()) votes[v] = (votes[v] ?? 0) + 1;
+      send(ws, { t: "voteupdate", votes });
+    }
     broadcast(target, { t: "pjoin", player: state }, id);
     console.log(`+ ${state.name} (#${id}) -> ${target.name} (${realCount(target)} players)`);
   }
@@ -769,7 +852,7 @@ wss.on("connection", (ws) => {
         break;
       }
       case "shoot": {
-        if (actor.state.dead) break;
+        if (actor.state.dead || room.intermission) break;
         if (!validVec(msg.origin) || !Array.isArray(msg.dirs)) break;
         const w = weaponOf(actor);
         const now = Date.now();
@@ -804,7 +887,17 @@ wss.on("connection", (ws) => {
         }
         break;
       case "ability":
-        if (typeof msg.ability === "string") handleAbility(room, actor, msg.ability, msg.origin, msg.dir);
+        if (!room.intermission && typeof msg.ability === "string")
+          handleAbility(room, actor, msg.ability, msg.origin, msg.dir);
+        break;
+      case "vote":
+        if (room.intermission && room.voteMaps.includes(msg.mapId)) {
+          room.mapVotes.set(actor.id, msg.mapId);
+          const votes: Record<string, number> = {};
+          for (const mid of room.voteMaps) votes[mid] = 0;
+          for (const v of room.mapVotes.values()) votes[v] = (votes[v] ?? 0) + 1;
+          broadcast(room, { t: "voteupdate", votes });
+        }
         break;
     }
   });
@@ -828,9 +921,13 @@ setInterval(() => {
   const dt = Math.min(0.1, (now - lastTick) / 1000);
   lastTick = now;
   for (const room of rooms.values()) {
-    if (now >= room.matchEndsAt) endMatch(room);
-    for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
-    if (room.projectiles.length) updateProjectiles(room, now, dt);
+    if (room.intermission) {
+      if (now >= room.intermissionEndsAt) startNextMatch(room);
+    } else {
+      if (now >= room.matchEndsAt) endMatch(room);
+      for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
+      if (room.projectiles.length) updateProjectiles(room, now, dt);
+    }
   }
 }, 1000 / TICK_RATE);
 

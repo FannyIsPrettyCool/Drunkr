@@ -52,6 +52,10 @@ export class LocalPlayer {
     private world: CollisionWorld,
   ) {}
 
+  setWorld(world: CollisionWorld) {
+    this.world = world;
+  }
+
   spawn(x: number, y: number, z: number) {
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);

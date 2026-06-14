@@ -92,8 +92,6 @@ export function stepMovement(
   if (state.grounded) {
     if (state.sliding) {
       applyFriction(state.vel, dt, SLIDE.friction);
-      // Gentle steering so you can curve the slide.
-      accelerate(state.vel, input.wishX, input.wishZ, Math.min(wishSpeed, speed2()), SLIDE.steer, dt);
     } else {
       if (!input.crouch) applyFriction(state.vel, dt, MOVE.friction);
       accelerate(state.vel, input.wishX, input.wishZ, wishSpeed, MOVE.groundAccel, dt);

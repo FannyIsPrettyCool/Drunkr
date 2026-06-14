@@ -69,6 +69,8 @@ export const DASH = {
 export const MATCH = {
   /** Round length (ms). Highest kills at time wins; then it restarts. */
   durationMs: 10 * 60 * 1000,
+  /** Intermission + map vote duration (ms) between rounds. */
+  intermissionMs: 15_000,
 };
 
 // ---------------------------------------------------------------------------
@@ -189,7 +191,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     damage: 24,
     fireRate: 600,
     magazine: 30,
-    reloadMs: 1600,
+    reloadMs: 1300,
     range: 220,
     spread: 0.013,
     headshotMul: 2.0,
@@ -203,14 +205,14 @@ export const WEAPONS: Record<string, WeaponDef> = {
     damage: 110,
     fireRate: 55,
     magazine: 1,
-    reloadMs: 1100,
+    reloadMs: 800,
     range: 320,
     spread: 0.0,
     headshotMul: 1.5,
     auto: false,
     scoped: true,
     zoomFov: 26,
-    hipPenalty: 0.08,
+    hipPenalty: 0.012,
     slot: 2,
   },
   // Double-barrel shotgun: a wall of pellets up close, and the recoil throws
@@ -221,7 +223,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     damage: 17,
     fireRate: 170,
     magazine: 2,
-    reloadMs: 1500,
+    reloadMs: 1200,
     range: 34,
     spread: 0.085,
     headshotMul: 1.25,

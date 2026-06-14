@@ -9,6 +9,10 @@ export interface Settings {
   fpsCap: number;
   /** Show the FPS counter. */
   showFps: boolean;
+  /** Background music volume (0–1). */
+  musicVolume: number;
+  /** Whether background music is enabled. */
+  musicEnabled: boolean;
 }
 
 export const QUALITY_HEIGHT: Record<Settings["quality"], number> = {
@@ -23,6 +27,8 @@ const DEFAULTS: Settings = {
   quality: "medium",
   fpsCap: 0,
   showFps: false,
+  musicVolume: 0.5,
+  musicEnabled: true,
 };
 
 const KEY = "drunkr.settings";

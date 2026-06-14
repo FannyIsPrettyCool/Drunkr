@@ -1,151 +1,191 @@
 /**
- * Tiny procedural sound engine. Everything is synthesised with the Web Audio
- * API at runtime — no asset files, no licensing. Call `resume()` from a user
- * gesture (pointer lock) before sounds will play.
+ * Sound engine: preloads game audio from /assets/, plays local sounds through
+ * the master GainNode, and spatialises remote/world sounds with a PannerNode.
+ * All audio files are fetched immediately and decoded once the AudioContext
+ * is created (on first user gesture).
  */
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
-  private noiseBuffer!: AudioBuffer;
+  private buffers = new Map<string, AudioBuffer>();
+  private raw = new Map<string, ArrayBuffer>();
+  private ambienceEl: HTMLAudioElement | null = null;
   enabled = true;
+
+  constructor() {
+    const files = [
+      'AK.wav', 'blink.wav', 'bullet_impact.wav', 'cloak.wav', 'confuse.wav',
+      'dash.wav', 'death.wav', 'flash.wav', 'footstep.wav', 'fortify.wav',
+      'frag_grenade.wav', 'headshot.wav', 'hit.wav', 'jump.wav', 'kill.wav',
+      'land_slide.wav', 'melee.wav', 'menu_click.wav', 'reload.wav',
+      'reload_sniper.wav', 'shockwave.wav', 'shotgun.wav', 'sniper.wav',
+      'updraft.wav',
+    ];
+    for (const f of files) {
+      fetch(`/assets/${f}`)
+        .then(r => r.arrayBuffer())
+        .then(ab => {
+          if (this.ctx) {
+            void this.ctx.decodeAudioData(ab, buf => this.buffers.set(f, buf));
+          } else {
+            this.raw.set(f, ab);
+          }
+        })
+        .catch(() => {});
+    }
+  }
 
   resume() {
     if (!this.ctx) {
       const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctx();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.35;
+      this.master.gain.value = 1.0;
       this.master.connect(this.ctx.destination);
-      this.noiseBuffer = this.makeNoise();
+      for (const [name, ab] of this.raw) {
+        void this.ctx.decodeAudioData(ab, buf => this.buffers.set(name, buf));
+      }
+      this.raw.clear();
     }
-    if (this.ctx.state === "suspended") void this.ctx.resume();
+    if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
-  private makeNoise(): AudioBuffer {
-    const ctx = this.ctx!;
-    const buf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    return buf;
-  }
+  getContext(): AudioContext | null { return this.ctx; }
 
-  private now() {
-    return this.ctx!.currentTime;
-  }
-
-  /** A short oscillator with an exponential decay envelope. */
-  private tone(
-    freq: number, dur: number, type: OscillatorType, gain: number, slideTo?: number,
-  ) {
-    if (!this.ready()) return;
-    const ctx = this.ctx!;
-    const t = this.now();
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), t + dur);
-    g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(g).connect(this.master);
-    osc.start(t);
-    osc.stop(t + dur + 0.02);
-  }
-
-  /** A filtered noise burst. */
-  private noise(dur: number, gain: number, filterFreq: number, type: BiquadFilterType = "bandpass", q = 1) {
-    if (!this.ready()) return;
-    const ctx = this.ctx!;
-    const t = this.now();
-    const src = ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const filt = ctx.createBiquadFilter();
-    filt.type = type;
-    filt.frequency.value = filterFreq;
-    filt.Q.value = q;
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(filt).connect(g).connect(this.master);
-    src.start(t);
-    src.stop(t + dur + 0.02);
+  /** Update the 3D audio listener to match the camera each frame. */
+  updateListener(px: number, py: number, pz: number, fwdX: number, fwdY: number, fwdZ: number) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const L = this.ctx.listener;
+    const t = this.ctx.currentTime;
+    if (L.positionX) {
+      L.positionX.setValueAtTime(px, t);
+      L.positionY.setValueAtTime(py, t);
+      L.positionZ.setValueAtTime(pz, t);
+      L.forwardX.setValueAtTime(fwdX, t);
+      L.forwardY.setValueAtTime(fwdY, t);
+      L.forwardZ.setValueAtTime(fwdZ, t);
+      L.upX.setValueAtTime(0, t);
+      L.upY.setValueAtTime(1, t);
+      L.upZ.setValueAtTime(0, t);
+    } else {
+      (L as unknown as { setPosition(...a: number[]): void }).setPosition(px, py, pz);
+      (L as unknown as { setOrientation(...a: number[]): void }).setOrientation(fwdX, fwdY, fwdZ, 0, 1, 0);
+    }
   }
 
   private ready(): boolean {
-    return this.enabled && !!this.ctx && this.ctx.state === "running";
+    return this.enabled && !!this.ctx && this.ctx.state === 'running';
   }
 
-  // --- Game sounds ---------------------------------------------------------
+  private makePanner(x: number, y: number, z: number): PannerNode | null {
+    if (!this.ready()) return null;
+    const ctx = this.ctx!;
+    const p = ctx.createPanner();
+    p.panningModel = 'HRTF';
+    p.distanceModel = 'inverse';
+    p.refDistance = 4;
+    p.maxDistance = 80;
+    p.rolloffFactor = 1.4;
+    const t = ctx.currentTime;
+    if (p.positionX) {
+      p.positionX.setValueAtTime(x, t);
+      p.positionY.setValueAtTime(y, t);
+      p.positionZ.setValueAtTime(z, t);
+    } else {
+      (p as unknown as { setPosition(...a: number[]): void }).setPosition(x, y, z);
+    }
+    p.connect(this.master);
+    return p;
+  }
+
+  private play(name: string, gain = 1.0, pitchMod = 1.0): void {
+    const buf = this.buffers.get(name);
+    if (!buf || !this.ready()) return;
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = pitchMod;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g).connect(this.master);
+    src.start();
+  }
+
+  private playAt(name: string, x: number, y: number, z: number, gain = 1.0): void {
+    const buf = this.buffers.get(name);
+    const panner = this.makePanner(x, y, z);
+    if (!buf || !panner) return;
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g).connect(panner);
+    src.start();
+  }
+
+  // ---- Ambient -------------------------------------------------------
+
+  startAmbience() {
+    if (this.ambienceEl) return;
+    this.ambienceEl = new Audio('/assets/ambience.wav');
+    this.ambienceEl.loop = true;
+    this.ambienceEl.volume = 0.12;
+    void this.ambienceEl.play().catch(() => {});
+  }
+
+  // ---- Local game sounds ---------------------------------------------
 
   shoot(weapon: string) {
     switch (weapon) {
-      case "sniper":
-        this.tone(180, 0.18, "sawtooth", 0.5, 60);
-        this.noise(0.12, 0.4, 2600, "highpass");
-        break;
-      case "shotgun":
-        this.noise(0.22, 0.6, 900, "lowpass");
-        this.tone(90, 0.2, "square", 0.4, 40);
-        break;
-      case "katana":
-        this.noise(0.14, 0.25, 3200, "bandpass", 4);
-        this.tone(1400, 0.12, "triangle", 0.12, 2600);
-        break;
-      default: // ak
-        this.noise(0.07, 0.35, 1800, "bandpass", 0.8);
-        this.tone(140, 0.08, "square", 0.3, 70);
+      case 'sniper':  this.play('sniper.wav', 0.85); break;
+      case 'shotgun': this.play('shotgun.wav', 0.9); break;
+      case 'katana':  this.play('melee.wav', 0.7); break;
+      default:        this.play('AK.wav', 0.7);
     }
   }
 
-  /** A quieter version of another player's shot. */
-  remoteShoot(weapon: string) {
-    const e = this.enabled;
-    if (this.ctx) this.master.gain.value = 0.16;
-    this.shoot(weapon);
-    if (this.ctx) this.master.gain.value = 0.35;
-    this.enabled = e;
+  reload(weaponId = '') {
+    this.play(weaponId === 'sniper' ? 'reload_sniper.wav' : 'reload.wav', 0.8);
   }
 
-  hit(head: boolean) {
-    this.tone(head ? 1500 : 900, 0.06, "square", 0.25, head ? 2000 : 1100);
+  hit(head: boolean) { this.play(head ? 'headshot.wav' : 'hit.wav', 0.95); }
+  kill()             { this.play('kill.wav', 1.0); }
+  death()            { this.play('death.wav', 1.0); }
+  jump()             { this.play('jump.wav', 0.55); }
+  land()             { this.play('land_slide.wav', 0.75); }
+  slide()            { this.play('land_slide.wav', 0.5, 0.85); }
+  dash()             { this.play('dash.wav', 0.8); }
+  switchWeapon()     { this.play('menu_click.wav', 0.5); }
+  footstep()         { this.play('footstep.wav', 0.28 + Math.random() * 0.12, 0.92 + Math.random() * 0.16); }
+
+  // ---- Ability sounds ------------------------------------------------
+
+  blink()        { this.play('blink.wav', 0.8); }
+  cloak()        { this.play('cloak.wav', 0.8); }
+  confuse()      { this.play('confuse.wav', 0.8); }
+  flashAbility() { this.play('flash.wav', 0.9); }
+  fragThrow()    { this.play('frag_grenade.wav', 0.45); }
+  updraft()      { this.play('updraft.wav', 0.7); }
+  fortify()      { this.play('fortify.wav', 0.8); }
+  shockwave()    { this.play('shockwave.wav', 1.0); }
+
+  // ---- Spatial (world) sounds ----------------------------------------
+
+  remoteShootAt(weapon: string, x: number, y: number, z: number) {
+    switch (weapon) {
+      case 'sniper':  this.playAt('sniper.wav', x, y, z, 1.0); break;
+      case 'shotgun': this.playAt('shotgun.wav', x, y, z, 1.0); break;
+      case 'katana':  this.playAt('melee.wav', x, y, z, 0.8); break;
+      default:        this.playAt('AK.wav', x, y, z, 1.0);
+    }
   }
 
-  kill() {
-    this.tone(800, 0.18, "triangle", 0.3, 200);
+  bulletImpact(x: number, y: number, z: number) {
+    this.playAt('bullet_impact.wav', x, y, z, 0.65);
   }
 
-  reload() {
-    this.tone(420, 0.05, "square", 0.18);
-    setTimeout(() => this.tone(300, 0.07, "square", 0.18), 140);
-  }
-
-  jump() {
-    this.tone(520, 0.09, "sine", 0.18, 900);
-  }
-
-  land() {
-    this.tone(160, 0.08, "sine", 0.2, 70);
-  }
-
-  slide() {
-    this.noise(0.4, 0.25, 1200, "lowpass");
-  }
-
-  dash() {
-    this.tone(300, 0.18, "sawtooth", 0.25, 1200);
-    this.noise(0.18, 0.2, 1600, "bandpass");
-  }
-
-  switchWeapon() {
-    this.tone(600, 0.04, "square", 0.12);
-  }
-
-  death() {
-    this.tone(400, 0.5, "sawtooth", 0.3, 60);
-  }
-
-  boom() {
-    this.noise(0.4, 0.6, 420, "lowpass");
-    this.tone(70, 0.4, "square", 0.45, 30);
+  boomAt(x: number, y: number, z: number) {
+    this.playAt('frag_grenade.wav', x, y, z, 1.2);
   }
 }
