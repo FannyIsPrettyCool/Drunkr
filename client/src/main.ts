@@ -1,5 +1,6 @@
 import { Network } from "./net/Network.js";
 import { Game } from "./core/Game.js";
+import { settings, saveSettings, type Settings } from "./core/Settings.js";
 import type { RoomInfo, BotDifficulty } from "@drunkr/shared";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
@@ -43,9 +44,53 @@ loadoutSel.value = localStorage.getItem("drunkr.loadout") ?? "ak";
 loadoutSel.addEventListener("change", () =>
   localStorage.setItem("drunkr.loadout", loadoutSel.value));
 
+const classSel = document.getElementById("cfg-class") as HTMLSelectElement;
+classSel.value = localStorage.getItem("drunkr.class") ?? "wind";
+classSel.addEventListener("change", () => localStorage.setItem("drunkr.class", classSel.value));
+
 function prefs() {
-  return { skin: selectedHue, weapon: loadoutSel.value };
+  return { skin: selectedHue, weapon: loadoutSel.value, cls: classSel.value };
 }
+
+// --- Settings --------------------------------------------------------------
+const setSens = document.getElementById("set-sens") as HTMLInputElement;
+const setSensVal = document.getElementById("set-sens-val")!;
+const setScoped = document.getElementById("set-scoped") as HTMLInputElement;
+const setScopedVal = document.getElementById("set-scoped-val")!;
+const setQuality = document.getElementById("set-quality") as HTMLSelectElement;
+const setFps = document.getElementById("set-fps") as HTMLSelectElement;
+const setShowFps = document.getElementById("set-showfps") as HTMLInputElement;
+
+setSens.value = String(settings.sensitivity);
+setSensVal.textContent = settings.sensitivity.toFixed(2);
+setScoped.value = String(settings.scopedSens);
+setScopedVal.textContent = settings.scopedSens.toFixed(2);
+setQuality.value = settings.quality;
+setFps.value = String(settings.fpsCap);
+setShowFps.checked = settings.showFps;
+
+setSens.addEventListener("input", () => {
+  settings.sensitivity = Number(setSens.value);
+  setSensVal.textContent = settings.sensitivity.toFixed(2);
+  saveSettings();
+});
+setScoped.addEventListener("input", () => {
+  settings.scopedSens = Number(setScoped.value);
+  setScopedVal.textContent = settings.scopedSens.toFixed(2);
+  saveSettings();
+});
+setQuality.addEventListener("change", () => {
+  settings.quality = setQuality.value as Settings["quality"];
+  saveSettings();
+});
+setFps.addEventListener("change", () => {
+  settings.fpsCap = Number(setFps.value);
+  saveSettings();
+});
+setShowFps.addEventListener("change", () => {
+  settings.showFps = setShowFps.checked;
+  saveSettings();
+});
 
 const net = new Network();
 let game: Game | null = null;
@@ -64,8 +109,8 @@ for (const tab of document.querySelectorAll<HTMLElement>(".tab")) {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     const name = tab.dataset.tab;
-    document.getElementById("tab-play")!.classList.toggle("hidden", name !== "play");
-    document.getElementById("tab-create")!.classList.toggle("hidden", name !== "create");
+    document.querySelectorAll<HTMLElement>(".tab-panel").forEach((p) =>
+      p.classList.toggle("hidden", p.id !== `tab-${name}`));
   });
 }
 

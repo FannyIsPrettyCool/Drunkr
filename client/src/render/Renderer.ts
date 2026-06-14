@@ -49,6 +49,12 @@ export class Renderer {
     this.scene.add(new THREE.AmbientLight(0x202840, 0.6));
   }
 
+  /** Change the internal render resolution (quality). */
+  setPixelHeight(h: number) {
+    this.pixelHeight = h;
+    this.resize();
+  }
+
   private resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;

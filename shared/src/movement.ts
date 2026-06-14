@@ -106,6 +106,19 @@ export function stepMovement(
 
   const res = world.move(state.pos, state.vel, MOVE.radius, MOVE.height, dt);
   state.grounded = res.grounded && !jumped;
+
+  // Jump pads: stepping on one launches you (overrides velocity).
+  if (state.grounded) {
+    const launch = world.padLaunch(state.pos);
+    if (launch) {
+      state.vel.x = launch.x;
+      state.vel.y = launch.y;
+      state.vel.z = launch.z;
+      state.grounded = false;
+      state.sliding = false;
+    }
+  }
+
   return { grounded: state.grounded, hitWall: res.hitWall };
 }
 

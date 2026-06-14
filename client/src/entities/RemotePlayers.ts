@@ -24,6 +24,7 @@ class Remote {
   private color: THREE.Color;
   private weaponId = "";
   private weaponMesh: THREE.Object3D | null = null;
+  private invis = false;
   private stride = 0;
   private prev = new THREE.Vector3();
   private hasPrev = false;
@@ -164,11 +165,25 @@ class Remote {
     this.hand.add(g);
   }
 
+  /** Cloaked enemies fade to a faint shimmer. */
+  private setInvis(on: boolean) {
+    if (on === this.invis) return;
+    this.invis = on;
+    this.group.traverse((o) => {
+      const mat = (o as THREE.Mesh | THREE.Sprite).material as THREE.Material | undefined;
+      if (mat) {
+        mat.transparent = true;
+        (mat as THREE.Material & { opacity: number }).opacity = on ? 0.08 : 1;
+      }
+    });
+  }
+
   push(state: PlayerState, time: number) {
     this.kills = state.kills;
     this.deaths = state.deaths;
     this.group.visible = !state.dead;
     this.setWeapon(state.weapon ?? "ak");
+    this.setInvis(!!state.invis);
     this.buffer.push({
       time,
       x: state.pos.x, y: state.pos.y, z: state.pos.z,

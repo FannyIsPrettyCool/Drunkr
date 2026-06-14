@@ -40,6 +40,27 @@ export class Arena {
       }
     }
 
+    for (const pad of map.pads ?? []) {
+      // A bright tilted slab leaning toward its launch direction.
+      const geo = new THREE.BoxGeometry(pad.size.x, pad.size.y, pad.size.z);
+      const mat = new THREE.MeshStandardMaterial({
+        color: pad.color, emissive: pad.color, emissiveIntensity: 0.9, metalness: 0.3, roughness: 0.4,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(pad.pos.x, pad.pos.y, pad.pos.z);
+      const ang = Math.atan2(pad.launch.x, pad.launch.z);
+      mesh.rotation.y = ang;
+      mesh.rotation.x = -0.25; // tilt like a ramp
+      this.group.add(mesh);
+      // Up-chevron marker.
+      const chevron = new THREE.Mesh(
+        new THREE.ConeGeometry(0.5, 1, 4),
+        new THREE.MeshBasicMaterial({ color: pad.color }),
+      );
+      chevron.position.set(pad.pos.x, pad.pos.y + 1, pad.pos.z);
+      this.group.add(chevron);
+    }
+
     this.addGrid(map.bounds);
   }
 

@@ -257,6 +257,7 @@ body {
 }
 .field input[type="range"] { width: 100%; margin-top: 0.3rem; accent-color: var(--neon-pink); }
 .check { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.7rem; font-size: 0.8rem; }
+.hint { font-size: 0.65rem; opacity: 0.45; margin-top: 0.4rem; line-height: 1.4; }
 .check input { accent-color: var(--neon-pink); }
 #cfg-name { margin: 0.2rem 0 1rem; text-align: center; }
 #quickplay { margin-bottom: 0.4rem; }
@@ -311,6 +312,30 @@ body {
   inset: 0;
   pointer-events: none;
   z-index: 5;
+}
+
+#timer {
+  position: absolute;
+  top: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 1.5rem;
+  letter-spacing: 0.1rem;
+  color: var(--fg);
+  text-shadow: 0 0 8px #000;
+  opacity: 0.85;
+}
+#timer.low {
+  color: var(--neon-pink);
+  text-shadow: 0 0 12px var(--neon-pink);
+}
+#fps {
+  position: absolute;
+  top: 0.9rem;
+  left: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--neon-cyan);
+  opacity: 0.7;
 }
 
 #crosshair {
@@ -416,22 +441,46 @@ body {
 #ammo .sep { opacity: 0.4; margin: 0 0.2rem; }
 #ammo-max { font-size: 1.3rem; opacity: 0.6; }
 
-#dash {
+#abilities {
   position: absolute;
-  bottom: 5.4rem;
+  bottom: 5.2rem;
   left: 3rem;
-  font-size: 0.8rem;
-  letter-spacing: 0.2rem;
-  padding: 0.25rem 0.6rem;
-  border: 1px solid #ffffff22;
-  color: #777;
-  opacity: 0.6;
+  display: flex;
+  gap: 0.5rem;
 }
-#dash.ready {
+.ability {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.12rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid #ffffff22;
+  color: #888;
+  opacity: 0.6;
+  background: #05060c88;
+}
+.ability.ready {
   color: var(--neon-cyan);
   border-color: var(--neon-cyan);
-  box-shadow: 0 0 12px #18e0ff44;
+  box-shadow: 0 0 12px #18e0ff33;
   opacity: 1;
+}
+.ability .ab-key {
+  font-weight: bold;
+  border: 1px solid currentColor;
+  padding: 0 0.25rem;
+  font-size: 0.65rem;
+}
+.ability .ab-cd { color: var(--neon-pink); font-weight: bold; }
+
+#blind {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 7;
 }
 
 #killfeed {
@@ -460,8 +509,9 @@ body {
   pointer-events: none;
 }
 #hitmarker.show {
-  opacity: 1;
-  animation: hm 0.25s ease-out;
+  /* `forwards` holds the final keyframe (opacity 0) so it can't get stuck
+     visible after the last hit / a kill. */
+  animation: hm 0.25s ease-out forwards;
 }
 #hitmarker::before,
 #hitmarker::after {
@@ -513,6 +563,35 @@ body {
   color: #ffd33d;
   text-shadow: 0 0 16px #ffd33d, 0 0 4px #000;
   animation: hm 0.4s ease-out;
+}
+
+#intermission {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.8rem;
+  text-align: center;
+  background: #05060cdd;
+  z-index: 8;
+}
+#intermission .io-title {
+  font-size: 1.4rem;
+  letter-spacing: 0.4rem;
+  color: var(--neon-cyan);
+  opacity: 0.8;
+}
+#intermission .winner {
+  font-size: 3rem;
+  letter-spacing: 0.3rem;
+  color: #ffd33d;
+  text-shadow: 0 0 24px #ffd33d;
+}
+#intermission .io-sub {
+  font-size: 0.9rem;
+  letter-spacing: 0.2rem;
+  opacity: 0.5;
 }
 
 #scoreboard {

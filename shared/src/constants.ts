@@ -42,20 +42,20 @@ export const MOVE = {
   height: 1.8,
 };
 
-/** Crouch-slide tuning. A slide trades steering for preserved momentum. */
+/** Crouch-slide tuning. A slide commits your direction and bleeds momentum. */
 export const SLIDE = {
   /** Minimum ground speed (m/s) needed to start a slide. */
   minSpeed: 7,
   /** Speed the slide snaps you to on initiation (gives a small boost). */
   boost: 13,
   /** Slide ends once you decelerate below this. */
-  endSpeed: 4.5,
-  /** Very low friction while sliding (that's the point). */
-  friction: 2.2,
-  /** Gentle steering accel allowed mid-slide. */
-  steer: 5,
+  endSpeed: 5,
+  /** Slide friction — low (keeps momentum) but enough to gradually slow you. */
+  friction: 4.5,
+  /** Only a slight steer is allowed mid-slide (you're mostly committed). */
+  steer: 1.2,
   /** Max slide duration (s) before it auto-ends. */
-  duration: 1.4,
+  duration: 1.1,
 };
 
 /** Dash ability tuning. */
@@ -67,8 +67,76 @@ export const DASH = {
 
 /** Server match settings. */
 export const MATCH = {
-  /** Kills to win a round (FFA). */
-  killLimit: 30,
+  /** Round length (ms). Highest kills at time wins; then it restarts. */
+  durationMs: 10 * 60 * 1000,
+};
+
+// ---------------------------------------------------------------------------
+// Classes & abilities
+// ---------------------------------------------------------------------------
+
+export type AbilityId =
+  | "dash" | "updraft" | "invis" | "confusion" | "flash" | "frag"
+  | "blink" | "fortify" | "shockwave";
+
+export interface AbilityDef {
+  id: AbilityId;
+  name: string;
+  cooldownMs: number;
+  /** True if the server must process it (vs a purely client-side movement). */
+  server: boolean;
+}
+
+export const ABILITIES: Record<AbilityId, AbilityDef> = {
+  dash: { id: "dash", name: "Dash", cooldownMs: DASH.cooldownMs, server: false },
+  updraft: { id: "updraft", name: "Updraft", cooldownMs: 5000, server: false },
+  invis: { id: "invis", name: "Cloak", cooldownMs: 15000, server: true },
+  confusion: { id: "confusion", name: "Confuse", cooldownMs: 12000, server: true },
+  flash: { id: "flash", name: "Flash", cooldownMs: 9000, server: true },
+  frag: { id: "frag", name: "Frag", cooldownMs: 13000, server: true },
+  blink: { id: "blink", name: "Blink", cooldownMs: 6000, server: false },
+  fortify: { id: "fortify", name: "Fortify", cooldownMs: 12000, server: true },
+  shockwave: { id: "shockwave", name: "Shockwave", cooldownMs: 10000, server: true },
+};
+
+export interface ClassDef {
+  id: string;
+  name: string;
+  /** Primary (F) and secondary (C) ability ids. */
+  F: AbilityId;
+  C: AbilityId;
+}
+
+export const CLASSES: Record<string, ClassDef> = {
+  wind: { id: "wind", name: "Wind Master", F: "dash", C: "updraft" },
+  illusionist: { id: "illusionist", name: "Illusionist", F: "invis", C: "confusion" },
+  cyborg: { id: "cyborg", name: "Cyborg", F: "flash", C: "frag" },
+  juggernaut: { id: "juggernaut", name: "Juggernaut", F: "fortify", C: "shockwave" },
+  phantom: { id: "phantom", name: "Phantom", F: "blink", C: "invis" },
+};
+export const CLASS_IDS = Object.keys(CLASSES);
+export const DEFAULT_CLASS = "wind";
+
+export const INVIS = { durationMs: 3000, speedMul: 1.4 };
+export const CONFUSION = { radius: 13 };
+export const UPDRAFT = { vy: 13 };
+export const BLINK = { dist: 11 };
+/** Juggernaut Fortify: heal to full plus this much temporary overheal. */
+export const FORTIFY = { overheal: 50 };
+/** Juggernaut Shockwave: AoE damage burst around you (+ a small self-leap). */
+export const SHOCKWAVE = { radius: 7, damage: 65, selfVy: 9 };
+export const GRENADE = {
+  fuseMs: 1400,
+  speed: 24,
+  gravity: 20,
+  /** Velocity retained after a bounce. */
+  bounce: 0.5,
+  radius: 0.25,
+  flashRadius: 26,
+  /** Full-blind duration; the white screen holds then fades over this. */
+  flashBlindMs: 3000,
+  fragRadius: 11,
+  fragDamage: 130,
 };
 
 export const PLAYER = {
@@ -159,7 +227,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     headshotMul: 1.25,
     auto: false,
     pellets: 9,
-    selfKnockback: 11.5,
+    selfKnockback: 17,
     slot: 3,
   },
   // Neon katana: a melee one-shot that makes you faster and grants a double

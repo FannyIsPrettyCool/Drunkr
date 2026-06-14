@@ -17,11 +17,20 @@ import {
   WEAPONS,
   DEFAULT_WEAPON,
   LOADOUT_WEAPONS,
+  CLASSES,
+  DEFAULT_CLASS,
+  ABILITIES,
+  INVIS,
+  CONFUSION,
+  GRENADE,
+  FORTIFY,
+  SHOCKWAVE,
   SNAPSHOT_RATE,
   TICK_RATE,
   MAPS,
   CollisionWorld,
   stepMovement,
+  type ProjectileState,
 } from "@drunkr/shared";
 
 const PORT = Number(process.env.PORT ?? 2567);
@@ -54,6 +63,9 @@ interface BotAI {
   sliding: boolean;
   slideTime: number;
   jumpsUsed: number;
+  // Magazine model so bots can't fire faster than they could reload.
+  ammo: number;
+  reloadUntil: number;
 }
 
 /** A participant: a connected client (ws set) or a bot (ai set). */
@@ -70,6 +82,17 @@ interface Actor {
   /** Sliding window message counter for flood protection. */
   msgWindowStart: number;
   msgCount: number;
+  /** Per-ability cooldown (earliest next-use timestamp). */
+  abilityCd: Record<string, number>;
+}
+
+interface Projectile {
+  id: number;
+  owner: number;
+  kind: "flash" | "frag";
+  pos: Vec3;
+  vel: Vec3;
+  explodeAt: number;
 }
 
 interface Room {
@@ -83,7 +106,12 @@ interface Room {
   botCount: number;
   actors: Map<number, Actor>;
   persistent: boolean;
+  /** Server-clock timestamp (ms) when the current match ends. */
+  matchEndsAt: number;
+  projectiles: Projectile[];
 }
+
+let nextProjId = 1;
 
 const rooms = new Map<string, Room>();
 let nextId = 1;
@@ -106,6 +134,8 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     botCount: config.bots ? clamp(Math.round(config.botCount), 0, 10) : 0,
     actors: new Map(),
     persistent,
+    matchEndsAt: Date.now() + MATCH.durationMs,
+    projectiles: [],
   };
   rooms.set(id, room);
   for (let i = 0; i < room.botCount; i++) spawnBot(room);
@@ -212,13 +242,14 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
   const s = pickSpawn(room);
   const hue = isFiniteNum(prefs?.skin) ? clamp(prefs!.skin!, 0, 1) : Math.random();
   const weapon = prefs?.weapon && LOADOUT_WEAPONS.includes(prefs.weapon) ? prefs.weapon : DEFAULT_WEAPON;
+  const cls = prefs?.cls && CLASSES[prefs.cls] ? prefs.cls : DEFAULT_CLASS;
   return {
     id, name: name.slice(0, 16) || `runner${id}`,
     pos: { x: s.x, y: s.y, z: s.z },
     yaw: 0, pitch: 0,
     health: PLAYER.maxHealth, hue,
     kills: 0, deaths: 0, dead: false,
-    weapon,
+    weapon, cls, invis: false,
   };
 }
 
@@ -279,10 +310,120 @@ function handleShoot(room: Room, shooter: Actor, origin: Vec3, dirs: Vec3[], mel
   }
 }
 
+// --- abilities & grenades --------------------------------------------------
+
+function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3, dir?: Vec3) {
+  const cls = CLASSES[actor.state.cls] ?? CLASSES[DEFAULT_CLASS];
+  // You may only use your own class's server-side abilities.
+  if (ability !== cls.F && ability !== cls.C) return;
+  const def = ABILITIES[ability as keyof typeof ABILITIES];
+  if (!def || !def.server || actor.state.dead) return;
+  const now = Date.now();
+  if (now < (actor.abilityCd[ability] ?? 0)) return;
+  actor.abilityCd[ability] = now + def.cooldownMs;
+
+  if (ability === "invis") {
+    actor.state.invis = true;
+    setTimeout(() => { actor.state.invis = false; }, INVIS.durationMs);
+  } else if (ability === "confusion") {
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const d = Math.hypot(a.state.pos.x - actor.state.pos.x, a.state.pos.z - actor.state.pos.z);
+      if (d > CONFUSION.radius) continue;
+      const w = LOADOUT_WEAPONS[Math.floor(Math.random() * LOADOUT_WEAPONS.length)];
+      a.state.weapon = w;
+      send(a.ws, { t: "forceweapon", weapon: w });
+    }
+  } else if (ability === "flash" || ability === "frag") {
+    spawnGrenade(room, actor, ability, origin, dir);
+  } else if (ability === "fortify") {
+    // Heal to full plus temporary overheal (reflected via the next snapshot).
+    actor.state.health = PLAYER.maxHealth + FORTIFY.overheal;
+  } else if (ability === "shockwave") {
+    broadcast(room, { t: "explosion", kind: "frag", pos: actor.state.pos });
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const dist = Math.hypot(
+        a.state.pos.x - actor.state.pos.x,
+        a.state.pos.y - actor.state.pos.y,
+        a.state.pos.z - actor.state.pos.z,
+      );
+      if (dist > SHOCKWAVE.radius) continue;
+      dealDamage(room, actor, a, SHOCKWAVE.damage, false);
+    }
+  }
+}
+
+function spawnGrenade(room: Room, owner: Actor, kind: "flash" | "frag", origin?: Vec3, dir?: Vec3) {
+  const e = eye(owner.state);
+  let o = validVec(origin) ? origin! : e;
+  if (Math.hypot(o.x - e.x, o.y - e.y, o.z - e.z) > 3) o = e;
+  let d = validVec(dir) ? dir! : { x: Math.sin(owner.state.yaw), y: 0.2, z: Math.cos(owner.state.yaw) };
+  const len = Math.hypot(d.x, d.y, d.z) || 1;
+  room.projectiles.push({
+    id: nextProjId++, owner: owner.id, kind,
+    pos: { x: o.x, y: o.y, z: o.z },
+    vel: { x: (d.x / len) * GRENADE.speed, y: (d.y / len) * GRENADE.speed + 3, z: (d.z / len) * GRENADE.speed },
+    explodeAt: Date.now() + GRENADE.fuseMs,
+  });
+}
+
+function insideSolid(room: Room, p: Vec3): boolean {
+  const r = GRENADE.radius;
+  for (const b of room.world.boxes) {
+    if (
+      p.x + r > b.minX && p.x - r < b.maxX &&
+      p.y + r > b.minY && p.y - r < b.maxY &&
+      p.z + r > b.minZ && p.z - r < b.maxZ
+    ) return true;
+  }
+  return false;
+}
+
+function updateProjectiles(room: Room, now: number, dt: number) {
+  for (let i = room.projectiles.length - 1; i >= 0; i--) {
+    const p = room.projectiles[i];
+    p.vel.y -= GRENADE.gravity * dt;
+    // Move axis-by-axis, bouncing off geometry.
+    p.pos.x += p.vel.x * dt;
+    if (insideSolid(room, p.pos)) { p.pos.x -= p.vel.x * dt; p.vel.x *= -GRENADE.bounce; }
+    p.pos.z += p.vel.z * dt;
+    if (insideSolid(room, p.pos)) { p.pos.z -= p.vel.z * dt; p.vel.z *= -GRENADE.bounce; }
+    p.pos.y += p.vel.y * dt;
+    if (insideSolid(room, p.pos)) { p.pos.y -= p.vel.y * dt; p.vel.y *= -GRENADE.bounce; p.vel.x *= 0.85; p.vel.z *= 0.85; }
+    if (p.pos.y < GRENADE.radius) {
+      p.pos.y = GRENADE.radius; p.vel.y = -p.vel.y * GRENADE.bounce; p.vel.x *= 0.85; p.vel.z *= 0.85;
+    }
+    if (now >= p.explodeAt) {
+      explodeGrenade(room, p);
+      room.projectiles.splice(i, 1);
+    }
+  }
+}
+
+function explodeGrenade(room: Room, p: Projectile) {
+  broadcast(room, { t: "explosion", kind: p.kind, pos: p.pos });
+  if (p.kind !== "frag") return; // flash blinds client-side
+  const owner = room.actors.get(p.owner);
+  if (!owner) return;
+  for (const a of room.actors.values()) {
+    if (a.state.dead) continue;
+    const c = chest(a.state);
+    const dist = Math.hypot(c.x - p.pos.x, c.y - p.pos.y, c.z - p.pos.z);
+    if (dist > GRENADE.fragRadius) continue;
+    if (room.world.segmentBlocked(p.pos, a.state.pos)) continue;
+    const dmg = Math.round(GRENADE.fragDamage * (1 - dist / GRENADE.fragRadius));
+    dealDamage(room, owner, a, dmg, false);
+  }
+}
+
 function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean) {
-  if (victim.state.dead) return;
   const w = weaponOf(attacker);
-  const dmg = Math.round(w.damage * (head ? w.headshotMul : 1));
+  dealDamage(room, attacker, victim, Math.round(w.damage * (head ? w.headshotMul : 1)), head);
+}
+
+function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean) {
+  if (victim.state.dead) return;
   victim.state.health -= dmg;
   send(victim.ws, { t: "damage", health: Math.max(0, victim.state.health), from: attacker.id });
 
@@ -293,15 +434,26 @@ function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean) 
     attacker.state.kills++;
     broadcast(room, { t: "kill", killer: attacker.id, victim: victim.id, head });
     setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
+  }
+}
 
-    // Kill-limit win condition: announce, then reset scores and play on.
-    if (attacker.state.kills >= MATCH.killLimit) {
-      broadcast(room, { t: "matchend", winner: attacker.id, name: attacker.state.name });
-      for (const a of room.actors.values()) {
-        a.state.kills = 0;
-        a.state.deaths = 0;
-      }
-    }
+/** End the round: highest kills wins, scores reset, the timer restarts. */
+function endMatch(room: Room) {
+  let winner: Actor | null = null;
+  for (const a of room.actors.values()) {
+    if (!winner || a.state.kills > winner.state.kills) winner = a;
+  }
+  room.matchEndsAt = Date.now() + MATCH.durationMs;
+  broadcast(room, {
+    t: "matchend",
+    winner: winner ? winner.id : -1,
+    name: winner ? winner.state.name : "nobody",
+    endsAt: room.matchEndsAt,
+  });
+  for (const a of room.actors.values()) {
+    a.state.kills = 0;
+    a.state.deaths = 0;
+    respawn(room, a); // fresh start for the new round
   }
 }
 
@@ -313,6 +465,10 @@ function respawn(room: Room, a: Actor) {
   a.state.dead = false;
   a.vel = { x: 0, y: 0, z: 0 };
   a.grounded = false;
+  if (a.ai) {
+    a.ai.ammo = weaponOf(a).magazine;
+    a.ai.reloadUntil = 0;
+  }
   broadcast(room, { t: "respawned", id: a.id, pos: a.state.pos, health: a.state.health });
 }
 
@@ -334,11 +490,12 @@ function spawnBot(room: Room) {
   room.actors.set(id, {
     id, ws: null, state,
     vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-    nextShot: 0, msgWindowStart: now, msgCount: 0,
+    nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {},
     ai: {
       waypoint: randomPoint(room), repathAt: now + 2000,
       nextJumpAt: now + 500, targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
       sliding: false, slideTime: 0, jumpsUsed: 0,
+      ammo: (WEAPONS[state.weapon] ?? WEAPONS[DEFAULT_WEAPON]).magazine, reloadUntil: 0,
     },
   });
 }
@@ -445,16 +602,14 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   }
   if (me.pos.y < -10) respawn(room, bot);
 
-  // Shooting.
-  if (target && targetVisible && now >= ai.reactAt && now >= ai.nextShotAt) {
+  // Shooting (with a real magazine + reload downtime).
+  if (target && targetVisible && now >= ai.reactAt && now >= ai.nextShotAt && now >= ai.reloadUntil) {
     const w = weaponOf(bot);
     const o = eye(me), t = chest(target.state);
     let dx = t.x - o.x, dy = t.y - o.y, dz = t.z - o.z;
     const l = Math.hypot(dx, dy, dz) || 1;
     dx /= l; dy /= l; dz /= l;
     const aimDot = dx * Math.sin(me.yaw) + dz * Math.cos(me.yaw);
-    // Snipers wait for a tighter lock; their one-shot is balanced by extra
-    // spread and the lever-action cycle time.
     const sniper = w.id === "sniper";
     const spread = diff.spread + (sniper ? 0.04 : w.id === "shotgun" ? 0.07 : 0);
     if (aimDot > (sniper ? 0.985 : 0.96)) {
@@ -468,9 +623,14 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
         });
       }
       handleShoot(room, bot, o, shotDirs, !!w.melee);
-      // Never fire faster than the weapon can cycle.
-      const cycle = Math.max(60_000 / w.fireRate, w.magazine === 1 ? w.reloadMs : 0);
-      ai.nextShotAt = now + Math.max(rng(diff.fire[0], diff.fire[1]), cycle);
+      ai.ammo--;
+      if (w.magazine > 0 && ai.ammo <= 0) {
+        // Empty the mag → forced reload downtime, just like a player.
+        ai.reloadUntil = now + w.reloadMs;
+        ai.ammo = w.magazine;
+      } else {
+        ai.nextShotAt = now + Math.max(rng(diff.fire[0], diff.fire[1]), 60_000 / w.fireRate);
+      }
     }
   }
 }
@@ -489,13 +649,13 @@ wss.on("connection", (ws) => {
     const now = Date.now();
     actor = {
       id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-      nextShot: 0, msgWindowStart: now, msgCount: 0,
+      nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {},
     };
     room = target;
     target.actors.set(id, actor);
     send(ws, {
       t: "welcome", id, mapId: target.mapId, roomId: target.id, roomName: target.name,
-      tickRate: TICK_RATE, snapshotRate: SNAPSHOT_RATE,
+      tickRate: TICK_RATE, snapshotRate: SNAPSHOT_RATE, matchEndsAt: target.matchEndsAt,
       players: [...target.actors.values()].map((a) => a.state),
     });
     broadcast(target, { t: "pjoin", player: state }, id);
@@ -580,6 +740,9 @@ wss.on("connection", (ws) => {
           actor.state.weapon = msg.weapon;
         }
         break;
+      case "ability":
+        if (typeof msg.ability === "string") handleAbility(room, actor, msg.ability, msg.origin, msg.dir);
+        break;
     }
   });
 
@@ -602,17 +765,21 @@ setInterval(() => {
   const dt = Math.min(0.1, (now - lastTick) / 1000);
   lastTick = now;
   for (const room of rooms.values()) {
+    if (now >= room.matchEndsAt) endMatch(room);
     for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
+    if (room.projectiles.length) updateProjectiles(room, now, dt);
   }
 }, 1000 / TICK_RATE);
 
 setInterval(() => {
   for (const room of rooms.values()) {
     if (realCount(room) === 0) continue;
+    const proj: ProjectileState[] = room.projectiles.map((p) => ({ id: p.id, kind: p.kind, pos: p.pos }));
     broadcast(room, {
       t: "snapshot",
       time: Date.now(),
       players: [...room.actors.values()].map((a) => a.state),
+      proj: proj.length ? proj : undefined,
     });
   }
 }, 1000 / SNAPSHOT_RATE);

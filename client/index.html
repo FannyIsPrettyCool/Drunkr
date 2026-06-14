@@ -11,6 +11,8 @@
 
     <!-- HUD -->
     <div id="hud" class="hidden">
+      <div id="timer">10:00</div>
+      <div id="fps" class="hidden">60 FPS</div>
       <div id="hitmarker"></div>
       <div id="crosshair">
         <span></span><span></span><span></span><span></span>
@@ -32,10 +34,19 @@
         <span>RELOADING</span>
       </div>
       <div id="killfeed"></div>
-      <div id="dash" class="ready">DASH</div>
+      <div id="abilities">
+        <div id="ability-f" class="ability ready"><span class="ab-key">F</span><span class="ab-name">Dash</span><span class="ab-cd"></span></div>
+        <div id="ability-c" class="ability ready"><span class="ab-key">C</span><span class="ab-name">Updraft</span><span class="ab-cd"></span></div>
+      </div>
+      <div id="blind"></div>
       <div id="damage-flash"></div>
       <div id="respawn" class="hidden">ELIMINATED<br /><small>respawning…</small></div>
       <div id="banner" class="hidden"></div>
+      <div id="intermission" class="hidden">
+        <div class="io-title">ROUND OVER</div>
+        <div class="winner"></div>
+        <div class="io-sub">next round starting…</div>
+      </div>
       <div id="scoreboard" class="hidden"></div>
     </div>
 
@@ -43,7 +54,6 @@
     <div id="menu">
       <div class="menu-card">
         <h1>DRUNKR</h1>
-        <p class="tagline">// neon arena · fast-paced FPS</p>
         <input id="name-input" maxlength="16" placeholder="callsign" autocomplete="off" />
 
         <div class="prefs">
@@ -59,11 +69,22 @@
               <option value="shotgun">DB-12 · shotgun</option>
             </select>
           </div>
+          <div class="prefs-row">
+            <span class="prefs-label">CLASS</span>
+            <select id="cfg-class">
+              <option value="wind">Wind Master · dash / updraft</option>
+              <option value="illusionist">Illusionist · cloak / confuse</option>
+              <option value="cyborg">Cyborg · flash / frag</option>
+              <option value="juggernaut">Juggernaut · fortify / shockwave</option>
+              <option value="phantom">Phantom · blink / cloak</option>
+            </select>
+          </div>
         </div>
 
         <div class="lobby-tabs">
           <button class="tab active" data-tab="play">PLAY</button>
           <button class="tab" data-tab="create">CREATE</button>
+          <button class="tab" data-tab="settings">SETTINGS</button>
         </div>
 
         <div id="tab-play" class="tab-panel">
@@ -75,9 +96,9 @@
         <div id="tab-create" class="tab-panel hidden">
           <label class="field">MAP
             <select id="cfg-map">
-              <option value="neon_yard">Neon Yard — open arena</option>
-              <option value="overdrive">Overdrive — two bases</option>
-              <option value="blacksite">Blacksite — indoor maze</option>
+              <option value="neon_yard">Neon Yard</option>
+              <option value="overdrive">Overdrive</option>
+              <option value="blacksite">Blacksite</option>
             </select>
           </label>
           <label class="field">DIFFICULTY
@@ -95,10 +116,37 @@
           <button id="create-btn" class="primary">CREATE &amp; PLAY</button>
         </div>
 
+        <div id="tab-settings" class="tab-panel hidden">
+          <label class="field">SENSITIVITY <span id="set-sens-val">1.00</span>
+            <input type="range" id="set-sens" min="0.2" max="3" step="0.05" value="1" />
+          </label>
+          <label class="field">SCOPED SENS <span id="set-scoped-val">0.60</span>
+            <input type="range" id="set-scoped" min="0.2" max="1.5" step="0.05" value="0.6" />
+          </label>
+          <label class="field">QUALITY
+            <select id="set-quality">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="field">FRAME RATE
+            <select id="set-fps">
+              <option value="0">Unlimited</option>
+              <option value="144">144</option>
+              <option value="120">120</option>
+              <option value="60">60</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="set-showfps" /> Show FPS counter</label>
+          <p class="hint">Settings save automatically and apply next time you drop in.</p>
+        </div>
+
         <div id="status">connecting…</div>
         <div class="controls">
-          <span>WASD move</span><span>SPACE jump/bhop</span><span>SHIFT crouch</span>
-          <span>MOUSE aim</span><span>CLICK fire</span><span>R reload</span><span>TAB scores</span>
+          <span>WASD move</span><span>SPACE jump/bhop</span><span>SHIFT crouch</span><span>F dash</span>
+          <span>MOUSE aim</span><span>RMB scope</span><span>1/2/3/Q weapons</span>
+          <span>R reload</span><span>TAB scores</span>
         </div>
       </div>
     </div>

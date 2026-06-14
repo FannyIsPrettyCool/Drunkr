@@ -143,4 +143,9 @@ export class Sfx {
   death() {
     this.tone(400, 0.5, "sawtooth", 0.3, 60);
   }
+
+  boom() {
+    this.noise(0.4, 0.6, 420, "lowpass");
+    this.tone(70, 0.4, "square", 0.45, 30);
+  }
 }

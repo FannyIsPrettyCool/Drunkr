@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DRUNKR · Level Editor</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="topbar">
+      <span class="brand">DRUNKR <b>EDITOR</b></span>
+      <label>Load
+        <select id="load-map">
+          <option value="">— new —</option>
+          <option value="neon_yard">Neon Yard</option>
+          <option value="overdrive">Overdrive</option>
+          <option value="blacksite">Blacksite</option>
+        </select>
+      </label>
+      <button id="add-box">+ Box</button>
+      <button id="add-pad">+ Pad</button>
+      <button id="add-spawn">+ Spawn</button>
+      <button id="duplicate">Duplicate</button>
+      <button id="delete" class="danger">Delete</button>
+      <span class="spacer"></span>
+      <button id="import">Import…</button>
+      <button id="export" class="primary">Export JSON</button>
+      <input id="file" type="file" accept="application/json" hidden />
+    </div>
+
+    <canvas id="view"></canvas>
+
+    <div id="panel">
+      <section>
+        <h3>MAP</h3>
+        <label>Name <input id="m-name" type="text" /></label>
+        <label>Bounds <input id="m-bounds" type="number" step="1" /></label>
+        <div class="counts" id="counts"></div>
+      </section>
+
+      <section id="props" class="hidden">
+        <h3 id="prop-title">OBJECT</h3>
+        <div class="row3">
+          <label>X <input id="p-px" type="number" step="0.5" /></label>
+          <label>Y <input id="p-py" type="number" step="0.5" /></label>
+          <label>Z <input id="p-pz" type="number" step="0.5" /></label>
+        </div>
+        <div class="row3 size-fields">
+          <label>W <input id="p-sx" type="number" step="0.5" /></label>
+          <label>H <input id="p-sy" type="number" step="0.5" /></label>
+          <label>D <input id="p-sz" type="number" step="0.5" /></label>
+        </div>
+        <div class="row3 launch-fields hidden">
+          <label>LvX <input id="p-lx" type="number" step="1" /></label>
+          <label>LvY <input id="p-ly" type="number" step="1" /></label>
+          <label>LvZ <input id="p-lz" type="number" step="1" /></label>
+        </div>
+        <div class="color-fields">
+          <label>Color <input id="p-color" type="color" /></label>
+          <label class="emi"><input id="p-emi-on" type="checkbox" /> Emissive
+            <input id="p-emi" type="color" />
+          </label>
+        </div>
+        <p class="future">Textures &amp; particle effects: coming soon.</p>
+      </section>
+
+      <section id="objlist-sec">
+        <h3>OBJECTS</h3>
+        <div id="objlist"></div>
+      </section>
+
+      <p class="help">
+        Drag = orbit · wheel = zoom · right-drag = pan · click an object to select.
+      </p>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

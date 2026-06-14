@@ -16,9 +16,16 @@ export class HUD {
   private weaponName = document.getElementById("weapon-name")!;
   private scope = document.getElementById("scope")!;
   private crosshair = document.getElementById("crosshair")!;
-  private dash = document.getElementById("dash")!;
+  private abilityF = document.getElementById("ability-f")!;
+  private abilityC = document.getElementById("ability-c")!;
+  private blindEl = document.getElementById("blind")!;
+  private blindTimer = 0;
   private bannerEl = document.getElementById("banner")!;
   private bannerTimer = 0;
+  private timerEl = document.getElementById("timer")!;
+  private fpsEl = document.getElementById("fps")!;
+  private intermission = document.getElementById("intermission")!;
+  private intermissionTimer = 0;
 
   show() {
     this.root.classList.remove("hidden");
@@ -39,8 +46,41 @@ export class HUD {
     }
   }
 
-  setDash(ready: boolean) {
-    this.dash.classList.toggle("ready", ready);
+  setAbility(slot: "F" | "C", name: string, ready: boolean, secsLeft: number) {
+    const el = slot === "F" ? this.abilityF : this.abilityC;
+    el.querySelector(".ab-name")!.textContent = name;
+    el.querySelector(".ab-cd")!.textContent = ready ? "" : String(secsLeft);
+    el.classList.toggle("ready", ready);
+  }
+
+  /** White flash-bang blind: holds fully white, then fades over the duration. */
+  blind(ms: number) {
+    clearTimeout(this.blindTimer);
+    this.blindEl.style.transition = "none";
+    this.blindEl.style.opacity = "1";
+    // Stay fully blind for ~45% of the time, then fade over the rest.
+    const hold = ms * 0.45;
+    this.blindTimer = window.setTimeout(() => {
+      this.blindEl.style.transition = `opacity ${ms - hold}ms ease-out`;
+      this.blindEl.style.opacity = "0";
+    }, hold);
+  }
+
+  setTimer(ms: number) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const mm = Math.floor(s / 60);
+    const ss = s % 60;
+    this.timerEl.textContent = `${mm}:${ss.toString().padStart(2, "0")}`;
+    this.timerEl.classList.toggle("low", s <= 30);
+  }
+
+  setFps(fps: number | null) {
+    if (fps === null) {
+      this.fpsEl.classList.add("hidden");
+    } else {
+      this.fpsEl.classList.remove("hidden");
+      this.fpsEl.textContent = `${fps} FPS`;
+    }
   }
 
   banner(text: string) {
@@ -48,6 +88,15 @@ export class HUD {
     this.bannerEl.classList.remove("hidden");
     clearTimeout(this.bannerTimer);
     this.bannerTimer = window.setTimeout(() => this.bannerEl.classList.add("hidden"), 4000);
+  }
+
+  /** Full-screen round-over / waiting screen, auto-hides after `ms`. */
+  showIntermission(winner: string, ms = 5000) {
+    this.intermission.querySelector(".winner")!.textContent = `${winner} WINS`;
+    this.intermission.classList.remove("hidden");
+    clearTimeout(this.intermissionTimer);
+    this.intermissionTimer = window.setTimeout(
+      () => this.intermission.classList.add("hidden"), ms);
   }
 
   hitmark(head: boolean) {

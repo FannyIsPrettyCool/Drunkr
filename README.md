@@ -34,10 +34,10 @@ The client auto-discovers the server on the same host, port 2567
 
 ### Controls
 
-`WASD` move · `SPACE` jump (hold to auto-bhop) · `SHIFT`/`C` crouch-slide ·
-`F` dash · `MOUSE` aim · `LMB` fire · `RMB` aim-down-sights (scope) ·
+`WASD` move · `SPACE` jump (hold to auto-bhop) · `SHIFT` crouch-slide ·
+`F` ability 1 · `C` ability 2 · `MOUSE` aim · `LMB` fire · `RMB` scope ·
 `1` AK · `2` sniper · `3` shotgun · `Q` katana · `R` reload ·
-`TAB` scoreboard · `ESC` release mouse (click to re-lock)
+hold `CAPS LOCK` for scoreboard · `ESC` release mouse (click to re-lock)
 
 **Movement tech:**
 - **Air-strafe** (strafe key + matching mouse turn) to exceed the ground cap.
@@ -61,12 +61,42 @@ Tuning lives in `MOVE` / `SLIDE` / `DASH` in `shared/src/constants.ts`.
 
 Each weapon keeps its own ammo when you switch. Bots roll a random loadout.
 
+### Classes & abilities
+
+Pick a class in the lobby; each has a **F** and **C** ability (cooldowns shown on
+the HUD).
+
+| Class       | F (ability 1)            | C (ability 2)                        |
+| ----------- | ------------------------ | ------------------------------------ |
+| Wind Master | Dash                     | Updraft (vertical boost)             |
+| Illusionist | Cloak (invis + faster)   | Confuse (scrambles nearby enemy guns)|
+| Cyborg      | Flash grenade (blinds)   | Frag grenade (AoE, can one-shot)     |
+| Juggernaut  | Fortify (heal + overheal)| Shockwave (AoE burst + self-leap)    |
+| Phantom     | Blink (teleport forward) | Cloak                                |
+
 ### Modes & cosmetics
 
-- **FFA kill-limit** match (first to 30) — scores reset and play continues.
-- **Skins** + **starting loadout** picked in the lobby.
+- **Timed FFA** — 10-minute rounds, highest kills wins; everyone respawns and a
+  new round starts after a short intermission.
+- **Jump pads** on Neon Yard launch you across the arena.
+- **Skins**, **starting loadout**, and **class** picked in the lobby.
+- **Settings** tab: sensitivity, scoped sensitivity, render quality, FPS cap,
+  FPS counter.
 - **Server browser** — create rooms (map, bots on/off, count, difficulty) or
   quick-play into the most populated one.
+
+## Level editor
+
+A standalone editor (`editor/` workspace) for authoring maps:
+
+```bash
+npm run dev:editor   # http://localhost:5174
+```
+
+Load a built-in map or start blank, add/move/edit **boxes**, **jump pads** and
+**spawn points** (orbit camera, click to select, edit in the side panel), then
+**Export JSON** — the output is a drop-in `GameMap` you can paste into
+`shared/src/map.ts` or re-import. Texture/particle support is stubbed for later.
 
 ## Architecture notes
 

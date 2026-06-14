@@ -25,11 +25,39 @@ export function boxToAABB(b: MapBox): AABB {
  * smoothly along walls instead of catching on corners. Shared by the client
  * player controller and the server-side bot simulation.
  */
+interface PadZone {
+  minX: number; maxX: number; minZ: number; maxZ: number; top: number;
+  launch: Vec3;
+}
+
 export class CollisionWorld {
   readonly boxes: AABB[];
+  private pads: PadZone[];
 
   constructor(map: GameMap) {
     this.boxes = map.boxes.map(boxToAABB);
+    this.pads = (map.pads ?? []).map((p) => ({
+      minX: p.pos.x - p.size.x / 2,
+      maxX: p.pos.x + p.size.x / 2,
+      minZ: p.pos.z - p.size.z / 2,
+      maxZ: p.pos.z + p.size.z / 2,
+      top: p.pos.y + p.size.y / 2,
+      launch: p.launch,
+    }));
+  }
+
+  /** If grounded over a jump pad, returns its launch velocity; else null. */
+  padLaunch(pos: Vec3): Vec3 | null {
+    for (const p of this.pads) {
+      if (
+        pos.x > p.minX && pos.x < p.maxX &&
+        pos.z > p.minZ && pos.z < p.maxZ &&
+        pos.y < p.top + 0.8 && pos.y > p.top - 1.2
+      ) {
+        return p.launch;
+      }
+    }
+    return null;
   }
 
   /**

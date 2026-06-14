@@ -45,6 +45,10 @@ export class Weapon {
   private kick = 0;
   /** Smoothed reload dip applied to the viewmodel (0 = up, 1 = lowered). */
   private reloadDip = 0;
+  /** Melee swing progress (1 = just swung, decays to 0). */
+  private swing = 0;
+  /** Weapon-bob phase, advanced by player movement. */
+  private bobTime = 0;
 
   private readonly baseFov: number;
   private ads = false;
@@ -118,43 +122,55 @@ export class Weapon {
       color: 0xff2d9b, emissive: 0xff2d9b, emissiveIntensity: 0.8,
     });
 
+    const add = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
+      const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+      me.position.set(x, y, z);
+      g.add(me);
+      return me;
+    };
+
     let muzzleZ = -0.9;
-    if (this.def.id === "sniper") {
-      // Long-barrelled scoped rifle.
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.13, 0.9), bodyMat);
-      body.position.set(0, 0, -0.45);
-      g.add(body);
-      const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.8), bodyMat);
-      barrel.position.set(0, 0.02, -1.0);
-      g.add(barrel);
-      // Scope.
-      const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.28, 8), accentMat);
-      scope.rotation.x = Math.PI / 2;
-      scope.position.set(0, 0.11, -0.45);
-      g.add(scope);
-      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.18, 0.12), bodyMat);
-      grip.position.set(0, -0.13, -0.1);
-      grip.rotation.x = 0.3;
-      g.add(grip);
-      muzzleZ = -1.4;
-    } else {
-      // Compact full-auto rifle.
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.7), bodyMat);
-      body.position.set(0, 0, -0.35);
-      g.add(body);
-      const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.5), bodyMat);
-      barrel.position.set(0, 0.02, -0.75);
-      g.add(barrel);
-      const accent = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.3), accentMat);
-      accent.position.set(0, 0.09, -0.3);
-      g.add(accent);
-      const mag = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.1), bodyMat);
-      mag.position.set(0, -0.18, -0.2);
-      g.add(mag);
-      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.12), bodyMat);
-      grip.position.set(0, -0.14, -0.05);
-      grip.rotation.x = 0.3;
-      g.add(grip);
+    switch (this.def.id) {
+      case "sniper": {
+        add(0.1, 0.13, 0.9, bodyMat, 0, 0, -0.45);
+        add(0.05, 0.05, 0.8, bodyMat, 0, 0.02, -1.0);
+        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.28, 8), accentMat);
+        scope.rotation.x = Math.PI / 2;
+        scope.position.set(0, 0.11, -0.45);
+        g.add(scope);
+        add(0.09, 0.18, 0.12, bodyMat, 0, -0.13, -0.1).rotation.x = 0.3;
+        muzzleZ = -1.4;
+        break;
+      }
+      case "shotgun": {
+        // Double-barrel — two stacked tubes + a wide stock.
+        add(0.16, 0.1, 0.7, bodyMat, 0, 0.04, -0.4);
+        add(0.06, 0.06, 0.66, bodyMat, -0.045, -0.02, -0.5);
+        add(0.06, 0.06, 0.66, bodyMat, 0.045, -0.02, -0.5);
+        add(0.14, 0.03, 0.24, accentMat, 0, 0.1, -0.25);
+        add(0.1, 0.16, 0.14, bodyMat, 0, -0.13, -0.02).rotation.x = 0.3;
+        muzzleZ = -0.85;
+        break;
+      }
+      case "katana": {
+        // A long glowing blade + guard + grip, angled like a held sword.
+        const bladeMat = new THREE.MeshStandardMaterial({
+          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.6,
+        });
+        add(0.03, 0.06, 1.1, bladeMat, 0, 0.02, -0.7);
+        add(0.16, 0.04, 0.06, accentMat, 0, 0, -0.16); // guard
+        add(0.05, 0.05, 0.22, bodyMat, 0, -0.04, -0.02); // grip
+        muzzleZ = -1.3;
+        break;
+      }
+      default: {
+        // Compact full-auto rifle (AK).
+        add(0.12, 0.16, 0.7, bodyMat, 0, 0, -0.35);
+        add(0.06, 0.06, 0.5, bodyMat, 0, 0.02, -0.75);
+        add(0.13, 0.03, 0.3, accentMat, 0, 0.09, -0.3);
+        add(0.08, 0.22, 0.1, bodyMat, 0, -0.18, -0.2);
+        add(0.1, 0.18, 0.12, bodyMat, 0, -0.14, -0.05).rotation.x = 0.3;
+      }
     }
 
     this.muzzle.position.set(0, 0, muzzleZ);
@@ -165,6 +181,20 @@ export class Weapon {
     g.position.set(0.22, -0.2, -0.35);
     this.viewmodel = g;
     this.camera.add(g);
+  }
+
+  /** True while zoomed in through a scope (for scoped-sensitivity). */
+  get scoped(): boolean {
+    return this.zoom > 0.5;
+  }
+
+  /** Refill every weapon to a full magazine (called on respawn). */
+  resetAmmo() {
+    this.ammoByWeapon = {};
+    this.ammo = this.def.magazine;
+    this.reloading = false;
+    this.reloadTimer = 0;
+    this.cb.onAmmo(this.ammo, this.def.magazine);
   }
 
   reload() {
@@ -252,8 +282,12 @@ export class Weapon {
       if (r.hit) { anyHit = true; anyHead = anyHead || r.head; }
     }
 
-    this.flash();
-    this.kick = 1;
+    if (this.def.melee) {
+      this.swing = 1; // slash instead of a muzzle flash
+    } else {
+      this.flash();
+      this.kick = 1;
+    }
 
     // Recoil by weapon (melee has none).
     const k = this.def.id === "sniper" ? 0.05 : this.def.id === "shotgun" ? 0.06 : this.def.melee ? 0 : 0.013;
@@ -357,12 +391,27 @@ export class Weapon {
     this.reloadDip += (dipTarget - this.reloadDip) * Math.min(1, 10 * dt);
     const work = this.reloading ? Math.sin(performance.now() * 0.018) * 0.05 * this.reloadDip : 0;
 
+    // Melee slash arc: a quick diagonal sweep from upper-right to lower-left.
+    this.swing = Math.max(0, this.swing - dt * 6);
+    const slash = this.swing > 0 ? Math.sin((1 - this.swing) * Math.PI) : 0;
+
+    // Weapon bob: sways with movement (and a faint idle breathe).
+    const moveSpeed = Math.hypot(this.local.vel.x, this.local.vel.z);
+    const moving = this.local.grounded ? Math.min(1, moveSpeed / MOVE.speed) : 0;
+    this.bobTime += dt * (5 + moveSpeed * 1.1);
+    const bobX = Math.cos(this.bobTime) * 0.018 * moving + Math.sin(performance.now() * 0.001) * 0.004;
+    const bobY = Math.abs(Math.sin(this.bobTime)) * 0.02 * moving;
+
     this.viewmodel.position.set(
-      0.22 + this.reloadDip * 0.04,
-      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24,
-      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05,
+      0.22 + this.reloadDip * 0.04 - slash * 0.18 + bobX,
+      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24 + slash * 0.1 - bobY,
+      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05 - slash * 0.25,
     );
-    this.viewmodel.rotation.set(this.reloadDip * 0.6 + work, this.reloadDip * 0.35, 0);
+    this.viewmodel.rotation.set(
+      this.reloadDip * 0.6 + work - slash * 1.5,
+      this.reloadDip * 0.35 + slash * 0.4,
+      slash * 1.3,
+    );
   }
 
   private killTracer(i: number) {

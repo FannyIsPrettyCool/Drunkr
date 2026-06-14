@@ -18,6 +18,17 @@ export interface PlayerState {
   dead: boolean;
   /** Currently-held weapon id (see WEAPONS). */
   weapon: string;
+  /** Class id (see CLASSES). */
+  cls: string;
+  /** Invisible (Illusionist cloak) — remote clients hide the avatar. */
+  invis: boolean;
+}
+
+/** A live grenade, sent in snapshots so clients can render it. */
+export interface ProjectileState {
+  id: number;
+  kind: "flash" | "frag";
+  pos: Vec3;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +64,8 @@ export interface PlayerPrefs {
   skin?: number;
   /** Starting weapon id. */
   weapon?: string;
+  /** Class id. */
+  cls?: string;
 }
 
 /** Join an existing room (or quick-play when roomId omitted). */
@@ -103,6 +116,14 @@ export interface C_SwitchWeapon {
   weapon: string;
 }
 
+/** Use a server-side ability (cloak, confusion, grenades). */
+export interface C_Ability {
+  t: "ability";
+  ability: string;
+  origin?: Vec3;
+  dir?: Vec3;
+}
+
 export type ClientMessage =
   | C_Join
   | C_Create
@@ -110,7 +131,8 @@ export type ClientMessage =
   | C_State
   | C_Shoot
   | C_Respawn
-  | C_SwitchWeapon;
+  | C_SwitchWeapon
+  | C_Ability;
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -124,6 +146,8 @@ export interface S_Welcome {
   roomName: string;
   tickRate: number;
   snapshotRate: number;
+  /** Server-clock timestamp (ms) when the current match ends. */
+  matchEndsAt: number;
   players: PlayerState[];
 }
 
@@ -137,6 +161,8 @@ export interface S_Snapshot {
   /** Server time (ms) the snapshot represents, for interpolation. */
   time: number;
   players: PlayerState[];
+  /** Live grenades to render. */
+  proj?: ProjectileState[];
 }
 
 export interface S_Join {
@@ -183,11 +209,26 @@ export interface S_Respawn {
   health: number;
 }
 
-/** A player hit the kill limit; scores reset and play continues. */
+/** Confusion: the server forces this client to a new weapon. */
+export interface S_ForceWeapon {
+  t: "forceweapon";
+  weapon: string;
+}
+
+/** A grenade detonated — clients spawn effects and may get blinded. */
+export interface S_Explosion {
+  t: "explosion";
+  kind: "flash" | "frag";
+  pos: Vec3;
+}
+
+/** The match timer expired; highest kills wins, scores reset, next round starts. */
 export interface S_MatchEnd {
   t: "matchend";
   winner: number;
   name: string;
+  /** Server-clock timestamp (ms) when the next match ends. */
+  endsAt: number;
 }
 
 export type ServerMessage =
@@ -200,7 +241,9 @@ export type ServerMessage =
   | S_Kill
   | S_Shot
   | S_Respawn
-  | S_MatchEnd;
+  | S_MatchEnd
+  | S_ForceWeapon
+  | S_Explosion;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);

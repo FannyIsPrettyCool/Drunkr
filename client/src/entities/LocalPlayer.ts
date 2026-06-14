@@ -32,6 +32,8 @@ export class LocalPlayer {
   speedMul = 1;
   maxJumps = 1;
   canSlide = true;
+  /** Look-sensitivity multiplier (settings + scoped), updated by Game. */
+  sensMul = 1;
 
   /** Dash ability cooldown (s remaining). */
   dashCooldown = 0;
@@ -63,8 +65,9 @@ export class LocalPlayer {
   }
 
   look(dx: number, dy: number) {
-    this.yaw -= dx * SENSITIVITY;
-    this.pitch -= dy * SENSITIVITY;
+    const s = SENSITIVITY * this.sensMul;
+    this.yaw -= dx * s;
+    this.pitch -= dy * s;
     this.pitch = clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
   }
 
@@ -79,6 +82,19 @@ export class LocalPlayer {
     this.vel.y += y;
     this.vel.z += z;
     if (y > 0.5) this.grounded = false;
+  }
+
+  /** Teleport forward (look direction), clamped against geometry. */
+  blink(dist: number) {
+    const fx = -Math.sin(this.yaw);
+    const fz = -Math.cos(this.yaw);
+    const sub = 6;
+    const step = dist / sub;
+    // Sub-stepped so thin walls still stop the blink.
+    for (let i = 0; i < sub; i++) {
+      const vel = { x: fx * step, y: 0, z: fz * step };
+      this.world.move(this.pos, vel, MOVE.radius, MOVE.height, 1);
+    }
   }
 
   /** Dash burst in the current move/look direction. Returns true if it fired. */

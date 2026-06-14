@@ -12,12 +12,22 @@ export interface MapBox {
   emissive?: number;
 }
 
+/** An angled launch pad: standing on it sets your velocity to `launch`. */
+export interface JumpPad {
+  pos: Vec3;
+  size: Vec3;
+  /** Velocity (m/s) imparted when you step on it. */
+  launch: Vec3;
+  color: number;
+}
+
 export interface GameMap {
   name: string;
   /** Half-extent of the playable floor on X/Z (square arena). */
   bounds: number;
   spawns: Vec3[];
   boxes: MapBox[];
+  pads?: JumpPad[];
 }
 
 const v = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
@@ -119,6 +129,13 @@ export const NEON_YARD: GameMap = {
     { pos: v(40, 1.5, -4), size: v(2, 3, 10), color: SLATE3, emissive: GREEN },
     { pos: v(4, 1.5, 40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
     { pos: v(-4, 1.5, -40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
+  ],
+  // Flat floor jump pads at the mid-edges, launching up and toward the center.
+  pads: [
+    { pos: v(-36, 0.1, 18), size: v(5, 0.2, 5), launch: v(11, 15, -7), color: CYAN },
+    { pos: v(36, 0.1, -18), size: v(5, 0.2, 5), launch: v(-11, 15, 7), color: CYAN },
+    { pos: v(18, 0.1, 36), size: v(5, 0.2, 5), launch: v(-7, 15, -11), color: PINK },
+    { pos: v(-18, 0.1, -36), size: v(5, 0.2, 5), launch: v(7, 15, 11), color: PINK },
   ],
 };
 

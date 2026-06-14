@@ -82,6 +82,10 @@ callsign, and drop in — they're now playing on your machine.
 
 ---
 
+> The Vite dev server is already configured with `server.allowedHosts: true`
+> (in `client/vite.config.ts`), so `*.trycloudflare.com` hosts are accepted —
+> you won't hit the "host not allowed" error.
+
 ## Notes & gotchas
 
 - **Quick-tunnel URLs are ephemeral.** They change every time you restart

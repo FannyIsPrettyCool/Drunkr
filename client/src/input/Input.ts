@@ -13,8 +13,8 @@ export class Input {
   onLockChange: ((locked: boolean) => void) | null = null;
   /** Weapon switch request by id. */
   onSwitch: ((weapon: string) => void) | null = null;
-  /** Dash ability key. */
-  onDash: (() => void) | null = null;
+  /** Ability key (F = primary, C = secondary). */
+  onAbility: ((slot: "F" | "C") => void) | null = null;
 
   private mouseDown = false;
   private rightDown = false;
@@ -27,7 +27,8 @@ export class Input {
       if (e.code === "Digit2") this.onSwitch?.("sniper");
       if (e.code === "Digit3") this.onSwitch?.("shotgun");
       if (e.code === "KeyQ") this.onSwitch?.("katana");
-      if (e.code === "KeyF") this.onDash?.();
+      if (e.code === "KeyF" && !e.repeat) this.onAbility?.("F");
+      if (e.code === "KeyC" && !e.repeat) this.onAbility?.("C");
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
 
@@ -37,7 +38,17 @@ export class Input {
     document.addEventListener("pointerlockchange", () => {
       this.locked = document.pointerLockElement === this.canvas;
       this.onLockChange?.(this.locked);
-      if (!this.locked) this.mouseDown = false;
+      if (!this.locked) {
+        this.mouseDown = false;
+        this.rightDown = false;
+        this.keys.clear(); // don't let held keys (e.g. CapsLock) stick
+      }
+    });
+    // If the window loses focus we never get keyup; clear everything.
+    window.addEventListener("blur", () => {
+      this.keys.clear();
+      this.mouseDown = false;
+      this.rightDown = false;
     });
 
     document.addEventListener("mousemove", (e) => {
@@ -90,11 +101,11 @@ export class Input {
   }
 
   get crouching(): boolean {
-    return this.isDown("ShiftLeft") || this.isDown("ShiftRight") || this.isDown("KeyC");
+    return this.isDown("ShiftLeft") || this.isDown("ShiftRight");
   }
 
   get showScores(): boolean {
-    return this.isDown("Tab");
+    return this.keys.has("CapsLock");
   }
 
   /** Returns and clears the accumulated mouse delta. */
