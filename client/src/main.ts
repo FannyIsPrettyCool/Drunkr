@@ -154,6 +154,24 @@ function joinRoom(roomId?: string) {
   status.textContent = "dropping in…";
 }
 
+// Custom map (editor export) for the Create tab.
+const cfgCustomFile = document.getElementById("cfg-custom-file") as HTMLInputElement;
+const cfgCustomName = document.getElementById("cfg-custom-name")!;
+let customMap: unknown = null;
+cfgCustomFile.addEventListener("change", async () => {
+  const f = cfgCustomFile.files?.[0];
+  if (!f) { customMap = null; cfgCustomName.textContent = ""; return; }
+  try {
+    const m = JSON.parse(await f.text());
+    if (!m.boxes || !m.spawns) throw new Error("bad");
+    customMap = m;
+    cfgCustomName.textContent = `loaded: ${m.name ?? "custom"} (${m.boxes.length} boxes)`;
+  } catch {
+    customMap = null;
+    cfgCustomName.textContent = "invalid map file";
+  }
+});
+
 function createRoom() {
   if (!net.connected || game) return;
   net.send({
@@ -166,6 +184,7 @@ function createRoom() {
       bots: cfgBots.checked,
       botCount: Number(cfgBotCount.value),
       difficulty: cfgDiff.value as BotDifficulty,
+      ...(customMap ? { customMap: customMap as never } : {}),
     },
   });
   status.textContent = "creating server…";

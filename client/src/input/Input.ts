@@ -43,6 +43,9 @@ export class Input {
         this.rightDown = false;
         this.keys.clear(); // don't let held keys (e.g. CapsLock) stick
       }
+      // Drop any accumulated look delta so re-locking doesn't snap the view.
+      this.mouseDX = 0;
+      this.mouseDY = 0;
     });
     // If the window loses focus we never get keyup; clear everything.
     window.addEventListener("blur", () => {
@@ -53,6 +56,9 @@ export class Input {
 
     document.addEventListener("mousemove", (e) => {
       if (!this.locked) return;
+      // Pointer-lock occasionally emits a huge bogus delta (on re-lock, alt-tab,
+      // OS pointer warp). Drop those so the view doesn't snap to a new place.
+      if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
       this.mouseDX += e.movementX;
       this.mouseDY += e.movementY;
     });

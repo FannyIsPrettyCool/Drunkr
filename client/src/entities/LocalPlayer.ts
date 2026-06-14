@@ -165,7 +165,7 @@ export class LocalPlayer {
     this.slideTime = state.slideTime;
     this.jumpsUsed = state.jumpsUsed;
 
-    if (this.pos.y < -12) this.spawn(this.pos.x, 5, this.pos.z);
+    // Void falls are handled by Game (server-side death), not an in-place respawn.
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.bobTime += dt * speed;

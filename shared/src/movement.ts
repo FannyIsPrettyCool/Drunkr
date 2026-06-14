@@ -107,6 +107,16 @@ export function stepMovement(
   const res = world.move(state.pos, state.vel, MOVE.radius, MOVE.height, dt);
   state.grounded = res.grounded && !jumped;
 
+  // Ramps: snap to the slope surface when walking on one (lets you climb).
+  if (!jumped) {
+    const ry = world.rampGround(state.pos);
+    if (ry !== null && state.vel.y <= 1 && state.pos.y >= ry - 1.4 && state.pos.y <= ry + 0.5) {
+      state.pos.y = ry;
+      if (state.vel.y < 0) state.vel.y = 0;
+      state.grounded = true;
+    }
+  }
+
   // Jump pads: stepping on one launches you (overrides velocity).
   if (state.grounded) {
     const launch = world.padLaunch(state.pos);

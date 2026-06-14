@@ -1,4 +1,5 @@
 import type { Vec3 } from "./math.js";
+import type { GameMap } from "./map.js";
 
 /** Authoritative state the server tracks (and broadcasts) per player. */
 export interface PlayerState {
@@ -44,6 +45,8 @@ export interface RoomConfig {
   bots: boolean;
   botCount: number;
   difficulty: BotDifficulty;
+  /** An editor-exported map to host instead of a built-in (validated server-side). */
+  customMap?: GameMap;
 }
 
 /** Summary of a room shown in the server browser. */
@@ -110,6 +113,11 @@ export interface C_Respawn {
   t: "respawn";
 }
 
+/** The client fell into the void — the server registers a self-death. */
+export interface C_Fell {
+  t: "fell";
+}
+
 /** Switch the held weapon (server validates and uses it for damage). */
 export interface C_SwitchWeapon {
   t: "weapon";
@@ -131,6 +139,7 @@ export type ClientMessage =
   | C_State
   | C_Shoot
   | C_Respawn
+  | C_Fell
   | C_SwitchWeapon
   | C_Ability;
 
@@ -148,6 +157,8 @@ export interface S_Welcome {
   snapshotRate: number;
   /** Server-clock timestamp (ms) when the current match ends. */
   matchEndsAt: number;
+  /** Present when the room hosts a custom (non-built-in) map. */
+  mapData?: GameMap;
   players: PlayerState[];
 }
 

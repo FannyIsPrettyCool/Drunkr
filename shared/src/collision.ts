@@ -7,13 +7,24 @@ export interface AABB {
 }
 
 export function boxToAABB(b: MapBox): AABB {
+  const hx = b.size.x / 2, hy = b.size.y / 2, hz = b.size.z / 2;
+  if (!b.rot || (b.rot.x === 0 && b.rot.y === 0 && b.rot.z === 0)) {
+    return {
+      minX: b.pos.x - hx, minY: b.pos.y - hy, minZ: b.pos.z - hz,
+      maxX: b.pos.x + hx, maxY: b.pos.y + hy, maxZ: b.pos.z + hz,
+    };
+  }
+  // Rotated box → axis-aligned bounding box that encloses the rotated extents
+  // (R = Rx·Ry·Rz). Collision is the enclosing box (slightly loose).
+  const cx = Math.cos(b.rot.x), sx = Math.sin(b.rot.x);
+  const cy = Math.cos(b.rot.y), sy = Math.sin(b.rot.y);
+  const cz = Math.cos(b.rot.z), sz = Math.sin(b.rot.z);
+  const ex = Math.abs(cy * cz) * hx + Math.abs(cy * sz) * hy + Math.abs(sy) * hz;
+  const ey = Math.abs(cx * sz + sx * sy * cz) * hx + Math.abs(cx * cz - sx * sy * sz) * hy + Math.abs(sx * cy) * hz;
+  const ez = Math.abs(sx * sz - cx * sy * cz) * hx + Math.abs(sx * cz + cx * sy * sz) * hy + Math.abs(cx * cy) * hz;
   return {
-    minX: b.pos.x - b.size.x / 2,
-    minY: b.pos.y - b.size.y / 2,
-    minZ: b.pos.z - b.size.z / 2,
-    maxX: b.pos.x + b.size.x / 2,
-    maxY: b.pos.y + b.size.y / 2,
-    maxZ: b.pos.z + b.size.z / 2,
+    minX: b.pos.x - ex, minY: b.pos.y - ey, minZ: b.pos.z - ez,
+    maxX: b.pos.x + ex, maxY: b.pos.y + ey, maxZ: b.pos.z + ez,
   };
 }
 
@@ -30,9 +41,15 @@ interface PadZone {
   launch: Vec3;
 }
 
+interface RampZone {
+  minX: number; maxX: number; minZ: number; maxZ: number;
+  baseY: number; height: number; dir: number;
+}
+
 export class CollisionWorld {
   readonly boxes: AABB[];
   private pads: PadZone[];
+  private ramps: RampZone[];
 
   constructor(map: GameMap) {
     this.boxes = map.boxes.map(boxToAABB);
@@ -44,6 +61,29 @@ export class CollisionWorld {
       top: p.pos.y + p.size.y / 2,
       launch: p.launch,
     }));
+    this.ramps = (map.ramps ?? []).map((r) => ({
+      minX: r.pos.x - r.size.x / 2,
+      maxX: r.pos.x + r.size.x / 2,
+      minZ: r.pos.z - r.size.z / 2,
+      maxZ: r.pos.z + r.size.z / 2,
+      baseY: r.pos.y,
+      height: r.size.y,
+      dir: r.dir,
+    }));
+  }
+
+  /** Surface height of a ramp under `pos`, or null if not over any ramp. */
+  rampGround(pos: Vec3): number | null {
+    for (const r of this.ramps) {
+      if (pos.x <= r.minX || pos.x >= r.maxX || pos.z <= r.minZ || pos.z >= r.maxZ) continue;
+      let t: number; // 0 at low edge, 1 at high edge
+      if (r.dir === 0) t = (pos.x - r.minX) / (r.maxX - r.minX);
+      else if (r.dir === 1) t = (r.maxX - pos.x) / (r.maxX - r.minX);
+      else if (r.dir === 2) t = (pos.z - r.minZ) / (r.maxZ - r.minZ);
+      else t = (r.maxZ - pos.z) / (r.maxZ - r.minZ);
+      return r.baseY + r.height * (t < 0 ? 0 : t > 1 ? 1 : t);
+    }
+    return null;
   }
 
   /** If grounded over a jump pad, returns its launch velocity; else null. */
@@ -71,6 +111,24 @@ export class CollisionWorld {
     radius: number,
     height: number,
     dt: number,
+  ): { grounded: boolean; hitWall: boolean } {
+    // Sub-step so high speed (bhop, dash, jump pads, blink) can't tunnel
+    // through walls or the floor in a single frame.
+    const maxDisp = Math.max(Math.abs(vel.x), Math.abs(vel.y), Math.abs(vel.z)) * dt;
+    const steps = Math.min(8, Math.max(1, Math.ceil(maxDisp / (radius * 0.75))));
+    const sdt = dt / steps;
+    let grounded = false;
+    let hitWall = false;
+    for (let s = 0; s < steps; s++) {
+      const r = this.stepAxes(pos, vel, radius, height, sdt);
+      grounded = grounded || r.grounded;
+      hitWall = hitWall || r.hitWall;
+    }
+    return { grounded, hitWall };
+  }
+
+  private stepAxes(
+    pos: Vec3, vel: Vec3, radius: number, height: number, dt: number,
   ): { grounded: boolean; hitWall: boolean } {
     let grounded = false;
     let hitWall = false;

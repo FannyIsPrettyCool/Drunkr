@@ -1,9 +1,9 @@
 /** Server simulation tick rate (Hz). */
 export const TICK_RATE = 60;
 /** How often the server broadcasts world snapshots to clients (Hz). */
-export const SNAPSHOT_RATE = 20;
+export const SNAPSHOT_RATE = 33;
 /** How often each client sends its state to the server (Hz). */
-export const CLIENT_SEND_RATE = 30;
+export const CLIENT_SEND_RATE = 33;
 
 /**
  * Movement tuning (units = meters). The model is Quake/Source style:

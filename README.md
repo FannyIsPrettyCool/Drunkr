@@ -116,9 +116,17 @@ Load a built-in map or start blank, add/move/edit **boxes**, **jump pads** and
   (`shared/src/movement.ts`) as players — they wander, bunny-hop, acquire the
   nearest visible enemy (line-of-sight tested against geometry), aim with a
   difficulty-tuned reaction delay, and shoot their (random) loadout.
-- **Maps** are lists of axis-aligned boxes (`shared/src/map.ts`) used for both
-  rendering and collision. Ships with *Neon Yard* (large), *Overdrive* (bases),
-  and *Blacksite* (indoor maze).
+- **Maps** are lists of boxes (`shared/src/map.ts`) used for both rendering and
+  collision, with optional rotation, **textures**, **jump pads**, **walkable
+  ramps/slopes**, and spawn points. Ships with *Neon Yard*, *Overdrive*,
+  *Blacksite*, and three vertical multi-floor maps: *Spire*, *Atrium*, *Skyhaven*.
+- **Ramps** use a height-function collision (the floor height varies linearly
+  across the footprint) so you can run up and down slopes — unlike the
+  axis-aligned boxes. Author them with the **+ Ramp** tool in the editor.
+- **Textures** are seamless tiling PNGs in `shared/assets/` (served from each
+  app's `public/textures/`). Boxes auto-pick a texture from their emissive
+  color/shape, or set one explicitly; UVs are world-scaled so tiles stay
+  consistent. `shared/src/textures.ts` holds the keys + logic.
 
 ## Sharing with a tester
 

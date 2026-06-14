@@ -1,6 +1,6 @@
 import type { Vec3 } from "./math.js";
 
-/** An axis-aligned box used for both rendering and collision. */
+/** A box used for both rendering and collision. */
 export interface MapBox {
   /** Center position. */
   pos: Vec3;
@@ -10,6 +10,10 @@ export interface MapBox {
   color: number;
   /** Optional neon emissive accent color. */
   emissive?: number;
+  /** Optional Euler rotation (radians). Collision uses an enclosing AABB. */
+  rot?: Vec3;
+  /** Optional texture key (see TEXTURE_KEYS). "none" forces a flat color. */
+  texture?: string;
 }
 
 /** An angled launch pad: standing on it sets your velocity to `launch`. */
@@ -19,6 +23,22 @@ export interface JumpPad {
   /** Velocity (m/s) imparted when you step on it. */
   launch: Vec3;
   color: number;
+  /** Optional Euler rotation (radians) — visual only. */
+  rot?: Vec3;
+}
+
+/**
+ * A walkable ramp. `pos` is the footprint center with `pos.y` the low-edge
+ * surface height; `size` is the footprint (x, z) plus the rise height (y).
+ * `dir` picks the high side: 0=+x, 1=-x, 2=+z, 3=-z.
+ */
+export interface Ramp {
+  pos: Vec3;
+  size: Vec3;
+  dir: number;
+  color: number;
+  emissive?: number;
+  texture?: string;
 }
 
 export interface GameMap {
@@ -28,6 +48,7 @@ export interface GameMap {
   spawns: Vec3[];
   boxes: MapBox[];
   pads?: JumpPad[];
+  ramps?: Ramp[];
 }
 
 const v = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
@@ -129,6 +150,11 @@ export const NEON_YARD: GameMap = {
     { pos: v(40, 1.5, -4), size: v(2, 3, 10), color: SLATE3, emissive: GREEN },
     { pos: v(4, 1.5, 40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
     { pos: v(-4, 1.5, -40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
+  ],
+  // Walkable ramps up onto a corner tower and a mid-ring building.
+  ramps: [
+    ramp(-32, -44, 12, 8, 0, 6, 1, AMBER), // onto the NW corner tower (rises -x)
+    ramp(-36, -8, 12, 6, 0, 5, 0, GREEN), // onto the NW mid building (rises +x)
   ],
   // Flat floor jump pads at the mid-edges, launching up and toward the center.
   pads: [
@@ -236,8 +262,149 @@ export const BLACKSITE: GameMap = {
   ],
 };
 
+// --- Vertical maps ---------------------------------------------------------
+
+/** A floor/platform whose top surface sits at `topY` (1 unit thick). */
+function plat(cx: number, cz: number, w: number, d: number, topY: number, emissive?: number): MapBox {
+  return { pos: v(cx, topY - 0.5, cz), size: v(w, 1, d), color: DARK, ...(emissive ? { emissive } : {}) };
+}
+/** A jump pad sitting on a surface at `topY`, launching up/inward. */
+function pad(x: number, z: number, topY: number, lx: number, ly: number, lz: number, color: number): JumpPad {
+  return { pos: v(x, topY + 0.1, z), size: v(4, 0.2, 4), launch: v(lx, ly, lz), color };
+}
+
+/** A walkable ramp: footprint (w×l), rising `height` from `baseY` toward `dir`. */
+function ramp(cx: number, cz: number, w: number, l: number, baseY: number, height: number, dir: number, emissive?: number): Ramp {
+  return { pos: v(cx, baseY, cz), size: v(w, height, l), dir, color: SLATE2, ...(emissive ? { emissive } : {}) };
+}
+
+/**
+ * "Spire" — a small, intensely vertical tower: four stacked platforms reached
+ * by jump pads, with a sniper perch at the top. Falling drops you a floor.
+ */
+export const SPIRE: GameMap = {
+  name: "Spire",
+  bounds: 22,
+  spawns: [
+    v(-18, 0, -18), v(18, 0, 18), v(18, 0, -18), v(-18, 0, 18),
+    v(-10, 8, 10), v(10, 8, -10), v(0, 16, 8), v(0, 24, 0),
+  ],
+  boxes: [
+    ...shell(22, 34),
+    // Floor 1
+    plat(0, 0, 30, 30, 8, CYAN),
+    wall(-15, 8, -15, 8, SLATE2, CYAN, 2.5), // low rails (cover)
+    { pos: v(0, 9, -15), size: v(30, 2.5, 1), color: SLATE2, emissive: CYAN },
+    { pos: v(0, 9, 15), size: v(30, 2.5, 1), color: SLATE2, emissive: CYAN },
+    { pos: v(7, 9.5, 0), size: v(3, 3, 3), color: SLATE3, emissive: PINK },
+    // Floor 2
+    plat(0, 0, 22, 22, 16, PINK),
+    { pos: v(-11, 17, 0), size: v(1, 2.5, 22), color: SLATE2, emissive: PINK },
+    { pos: v(11, 17, 0), size: v(1, 2.5, 22), color: SLATE2, emissive: PINK },
+    { pos: v(-6, 17.5, 6), size: v(3, 3, 3), color: SLATE3, emissive: GREEN },
+    // Floor 3 (top perch)
+    plat(0, 0, 13, 13, 24, AMBER),
+    { pos: v(0, 25.5, 0), size: v(3, 5, 3), color: SLATE3, emissive: AMBER },
+  ],
+  // Pads up: ground→F1, F1→F2, F2→F3
+  pads: [
+    pad(-18, 18, 0, 5, 20, -5, CYAN),
+    pad(18, -18, 0, -5, 20, 5, CYAN),
+    pad(-9, 9, 8, 4, 20, -4, PINK),
+    pad(9, -9, 8, -4, 20, 4, PINK),
+    pad(8, 0, 16, -3, 19, 0, AMBER),
+  ],
+};
+
+/**
+ * "Atrium" — a medium 3-storey building with an open central void. Perimeter
+ * balconies on each floor, connected by pads; long sightlines down the atrium.
+ */
+export const ATRIUM: GameMap = {
+  name: "Atrium",
+  bounds: 36,
+  spawns: [
+    v(-30, 0, -30), v(30, 0, 30), v(30, 0, -30), v(-30, 0, 30),
+    v(-28, 8, 0), v(28, 8, 0), v(0, 16, -28), v(0, 16, 28),
+    v(-28, 16, 0), v(28, 16, 0),
+  ],
+  boxes: [
+    ...shell(36, 28),
+    // central pillar all the way up
+    { pos: v(0, 13, 0), size: v(5, 26, 5), color: SLATE3, emissive: GREEN },
+    // Floor 2 balconies (ring with open center), top at y=8, walkway depth 9
+    plat(0, -28, 72, 9, 8, CYAN), plat(0, 28, 72, 9, 8, CYAN),
+    plat(-28, 0, 9, 56, 8, PINK), plat(28, 0, 9, 56, 8, PINK),
+    // Floor 3 balconies, narrower, top at y=16
+    plat(0, -28, 72, 7, 16, AMBER), plat(0, 28, 72, 7, 16, AMBER),
+    plat(-28, 0, 7, 56, 16, AMBER), plat(28, 0, 7, 56, 16, AMBER),
+    // Cover crates on the balconies
+    { pos: v(-20, 9, -28), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
+    { pos: v(20, 9, 28), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
+    { pos: v(-28, 17, 12), size: v(3, 2.5, 3), color: SLATE3, emissive: AMBER },
+    { pos: v(28, 17, -12), size: v(3, 2.5, 3), color: SLATE3, emissive: AMBER },
+  ],
+  // Walkable ramps from the ground up to the floor-2 balconies.
+  ramps: [
+    ramp(0, -14.5, 6, 18, 0, 8, 3, CYAN), // up to north balcony (rises -z)
+    ramp(0, 14.5, 6, 18, 0, 8, 2, PINK), // up to south balcony (rises +z)
+  ],
+  // Pads: ground→F2, F2→F3
+  pads: [
+    pad(-30, 18, 0, 0, 21, -8, CYAN),
+    pad(30, -18, 0, 0, 21, 8, CYAN),
+    pad(18, -30, 0, -8, 21, 0, PINK),
+    pad(-18, 30, 0, 8, 21, 0, PINK),
+    pad(-28, 10, 8, 0, 20, -6, AMBER),
+    pad(28, -10, 8, 0, 20, 6, AMBER),
+  ],
+};
+
+/**
+ * "Skyhaven" — a large rooftops map: tall building blocks of varying heights
+ * with bridges and pads between them, over a ground floor you can fall back to.
+ */
+export const SKYHAVEN: GameMap = {
+  name: "Skyhaven",
+  bounds: 55,
+  spawns: [
+    v(-46, 0, -46), v(46, 0, 46), v(46, 0, -46), v(-46, 0, 46),
+    v(-30, 12, -30), v(30, 12, 30), v(0, 18, 0), v(-30, 12, 30),
+    v(30, 12, -30), v(0, 0, -48), v(0, 0, 48), v(-48, 0, 0),
+  ],
+  boxes: [
+    ...shell(55, 10),
+    // Building blocks (solid towers) of varying heights — rooftops to fight on.
+    { pos: v(-30, 6, -30), size: v(18, 12, 18), color: SLATE2, emissive: CYAN },
+    { pos: v(30, 9, 30), size: v(18, 18, 18), color: SLATE2, emissive: PINK },
+    { pos: v(30, 6, -30), size: v(16, 12, 16), color: SLATE2, emissive: AMBER },
+    { pos: v(-30, 7.5, 30), size: v(16, 15, 16), color: SLATE2, emissive: GREEN },
+    { pos: v(0, 9, 0), size: v(14, 18, 14), color: SLATE3, emissive: PINK }, // central spire
+    // Sky-bridges between rooftops
+    { pos: v(-15, 12, -30), size: v(12, 1, 5), color: DARK, emissive: CYAN },
+    { pos: v(15, 18, 30), size: v(12, 1, 5), color: DARK, emissive: PINK },
+    { pos: v(30, 12, 0), size: v(5, 1, 12), color: DARK, emissive: AMBER },
+    { pos: v(-30, 15, 0), size: v(5, 1, 12), color: DARK, emissive: GREEN },
+    // Rooftop cover
+    { pos: v(-30, 13, -30), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
+    { pos: v(30, 19, 30), size: v(3, 2.5, 3), color: SLATE3, emissive: PINK },
+    { pos: v(0, 19, 0), size: v(3, 2.5, 3), color: SLATE3, emissive: AMBER },
+  ],
+  // Pads from the ground up to the rooftops
+  pads: [
+    pad(-46, 0, 0, 8, 22, 8, CYAN),
+    pad(46, 0, 0, -8, 26, -8, PINK),
+    pad(0, -46, 0, 0, 22, 8, AMBER),
+    pad(0, 46, 0, 0, 22, -8, GREEN),
+    pad(-14, 12, -30, 8, 18, 4, PINK), // bridge to central spire
+  ],
+};
+
 export const MAPS: Record<string, GameMap> = {
   neon_yard: NEON_YARD,
   overdrive: OVERDRIVE,
   blacksite: BLACKSITE,
+  spire: SPIRE,
+  atrium: ATRIUM,
+  skyhaven: SKYHAVEN,
 };

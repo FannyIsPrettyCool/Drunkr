@@ -47,6 +47,7 @@ export class Game {
   private clockOffset = 0;
   private matchEndsAt: number;
   private fps = 60;
+  private fellSent = false;
   private localCls = DEFAULT_CLASS;
   /** Client-side ability cooldown end times (performance.now ms). */
   private abilityCd: Record<string, number> = {};
@@ -61,7 +62,8 @@ export class Game {
   ) {
     this.localId = welcome.id;
     this.matchEndsAt = welcome.matchEndsAt;
-    const map = MAPS[welcome.mapId];
+    // Custom (editor) maps arrive inline; built-ins are looked up by id.
+    const map = welcome.mapData ?? MAPS[welcome.mapId] ?? MAPS.neon_yard;
 
     this.renderer = new Renderer(canvas);
     this.arena = new Arena(map);
@@ -200,6 +202,7 @@ export class Game {
         if (msg.id === this.localId) {
           this.local.spawn(msg.pos.x, msg.pos.y, msg.pos.z);
           this.local.dead = false;
+          this.fellSent = false;
           this.hud.setDead(false);
           this.hud.setHealth(msg.health);
           this.weapon.resetAmmo(); // respawn with fresh mags
@@ -422,6 +425,14 @@ export class Game {
     if (mv.jumped) this.sfx.jump();
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
+    // Fell into the void → tell the server (it registers the death).
+    if (!this.local.dead && this.local.pos.y < -30 && !this.fellSent) {
+      this.fellSent = true;
+      this.local.dead = true;
+      this.hud.setDead(true);
+      this.sfx.death();
+      this.net.send({ t: "fell" });
+    }
     this.weapon.update(dt, this.input.firing && this.input.locked, this.input.ads);
     this.remotes.update(dt);
     this.updateAbilityHud();

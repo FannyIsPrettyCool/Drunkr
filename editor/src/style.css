@@ -39,6 +39,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 #topbar button:hover { border-color: var(--cyan); }
 #topbar .primary { background: var(--cyan); color: #05060c; border: none; font-weight: bold; }
 #topbar .danger { color: var(--pink); border-color: var(--pink); }
+#topbar .sep { width: 1px; height: 22px; background: #ffffff22; margin: 0 0.2rem; }
+#topbar .mode.active { background: var(--cyan); color: #05060c; border-color: var(--cyan); font-weight: bold; }
 
 #panel {
   position: fixed;

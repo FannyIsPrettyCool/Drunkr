@@ -30,6 +30,7 @@ import {
   MAPS,
   CollisionWorld,
   stepMovement,
+  TEXTURE_KEYS,
   type ProjectileState,
 } from "@drunkr/shared";
 
@@ -100,6 +101,8 @@ interface Room {
   name: string;
   mapId: string;
   map: GameMap;
+  /** Set when the map is a custom (editor) map, sent to joiners in welcome. */
+  customMap?: GameMap;
   world: CollisionWorld;
   difficulty: BotDifficulty;
   botsEnabled: boolean;
@@ -117,17 +120,64 @@ const rooms = new Map<string, Room>();
 let nextId = 1;
 let nextRoomNum = 1;
 
+/** Sanitize/validate an editor-supplied map; returns null if unusable. */
+function validateMap(m: unknown): GameMap | null {
+  if (!m || typeof m !== "object") return null;
+  const raw = m as Partial<GameMap>;
+  if (!Array.isArray(raw.boxes) || !Array.isArray(raw.spawns)) return null;
+  const bounds = clamp(isFiniteNum(raw.bounds) ? raw.bounds : 40, 8, 200);
+  const num = (n: unknown, d = 0) => (isFiniteNum(n) ? clamp(n, -500, 500) : d);
+  const vec = (v: unknown): Vec3 => ({ x: num((v as Vec3)?.x), y: num((v as Vec3)?.y), z: num((v as Vec3)?.z) });
+  const col = (c: unknown) => (isFiniteNum(c) ? clamp(Math.floor(c), 0, 0xffffff) : 0x2a2e45);
+
+  const validTex = (t: unknown) => typeof t === "string" && (t === "none" || (TEXTURE_KEYS as readonly string[]).includes(t));
+  const boxes = raw.boxes.slice(0, 600).map((b) => ({
+    pos: vec(b.pos),
+    size: { x: clamp(num((b.size as Vec3)?.x, 1), 0.1, 400), y: clamp(num((b.size as Vec3)?.y, 1), 0.1, 400), z: clamp(num((b.size as Vec3)?.z, 1), 0.1, 400) },
+    color: col(b.color),
+    ...(isFiniteNum(b.emissive) ? { emissive: col(b.emissive) } : {}),
+    ...(b.rot ? { rot: vec(b.rot) } : {}),
+    ...(validTex(b.texture) ? { texture: b.texture } : {}),
+  }));
+  const spawns = raw.spawns.slice(0, 64).map(vec);
+  if (boxes.length === 0 || spawns.length === 0) return null;
+  const sizeVec = (v: unknown): Vec3 => ({
+    x: clamp(num((v as Vec3)?.x, 1), 0.1, 400),
+    y: clamp(num((v as Vec3)?.y, 1), 0.1, 400),
+    z: clamp(num((v as Vec3)?.z, 1), 0.1, 400),
+  });
+  const pads = Array.isArray(raw.pads)
+    ? raw.pads.slice(0, 64).map((p) => ({ pos: vec(p.pos), size: sizeVec(p.size), launch: vec(p.launch), color: col(p.color), ...(p.rot ? { rot: vec(p.rot) } : {}) }))
+    : undefined;
+  const ramps = Array.isArray(raw.ramps)
+    ? raw.ramps.slice(0, 64).map((r) => ({
+        pos: vec(r.pos), size: sizeVec(r.size), dir: clamp(Math.floor(num(r.dir)), 0, 3), color: col(r.color),
+        ...(isFiniteNum(r.emissive) ? { emissive: col(r.emissive) } : {}),
+        ...(validTex(r.texture) ? { texture: r.texture } : {}),
+      }))
+    : undefined;
+  return {
+    name: (typeof raw.name === "string" ? raw.name : "Custom").slice(0, 24),
+    bounds, spawns, boxes,
+    ...(pads && pads.length ? { pads } : {}),
+    ...(ramps && ramps.length ? { ramps } : {}),
+  };
+}
+
 // --- room lifecycle --------------------------------------------------------
 
 function createRoom(config: RoomConfig, persistent = false): Room {
-  const mapId = MAPS[config.mapId] ? config.mapId : DEFAULT_MAP;
-  const map = MAPS[mapId];
+  // A validated custom map (from the editor) takes precedence over a built-in.
+  const custom = config.customMap ? validateMap(config.customMap) : null;
+  const mapId = custom ? "custom" : MAPS[config.mapId] ? config.mapId : DEFAULT_MAP;
+  const map = custom ?? MAPS[mapId];
   const id = `r${nextRoomNum++}`;
   const room: Room = {
     id,
     name: (config.name || `${map.name} #${id}`).slice(0, 24),
     mapId,
     map,
+    customMap: custom ?? undefined,
     world: new CollisionWorld(map),
     difficulty: config.difficulty in BOT_DIFF ? config.difficulty : "normal",
     botsEnabled: config.bots,
@@ -656,6 +706,7 @@ wss.on("connection", (ws) => {
     send(ws, {
       t: "welcome", id, mapId: target.mapId, roomId: target.id, roomName: target.name,
       tickRate: TICK_RATE, snapshotRate: SNAPSHOT_RATE, matchEndsAt: target.matchEndsAt,
+      ...(target.customMap ? { mapData: target.customMap } : {}),
       players: [...target.actors.values()].map((a) => a.state),
     });
     broadcast(target, { t: "pjoin", player: state }, id);
@@ -734,6 +785,18 @@ wss.on("connection", (ws) => {
       case "respawn":
         if (actor.state.dead) respawn(room, actor);
         break;
+      case "fell": {
+        // Fell into the void → self-death.
+        const rm = room, self = actor;
+        if (!self.state.dead) {
+          self.state.dead = true;
+          self.state.health = 0;
+          self.state.deaths++;
+          broadcast(rm, { t: "kill", killer: self.id, victim: self.id, head: false });
+          setTimeout(() => respawn(rm, self), PLAYER.respawnDelayMs);
+        }
+        break;
+      }
       case "weapon":
         // Players may only switch to loadout weapons or the always-available katana.
         if (WEAPONS[msg.weapon] && (LOADOUT_WEAPONS.includes(msg.weapon) || msg.weapon === "katana")) {

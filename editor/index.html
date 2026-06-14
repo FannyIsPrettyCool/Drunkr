@@ -15,11 +15,20 @@
           <option value="neon_yard">Neon Yard</option>
           <option value="overdrive">Overdrive</option>
           <option value="blacksite">Blacksite</option>
+          <option value="spire">Spire</option>
+          <option value="atrium">Atrium</option>
+          <option value="skyhaven">Skyhaven</option>
         </select>
       </label>
       <button id="add-box">+ Box</button>
       <button id="add-pad">+ Pad</button>
+      <button id="add-ramp">+ Ramp</button>
       <button id="add-spawn">+ Spawn</button>
+      <span class="sep"></span>
+      <button class="mode active" data-mode="translate" title="Move (W)">Move</button>
+      <button class="mode" data-mode="rotate" title="Rotate (E)">Rotate</button>
+      <button class="mode" data-mode="scale" title="Scale (R)">Scale</button>
+      <span class="sep"></span>
       <button id="duplicate">Duplicate</button>
       <button id="delete" class="danger">Delete</button>
       <span class="spacer"></span>
@@ -55,13 +64,24 @@
           <label>LvY <input id="p-ly" type="number" step="1" /></label>
           <label>LvZ <input id="p-lz" type="number" step="1" /></label>
         </div>
+        <label class="field dir-fields hidden">RISE DIR
+          <select id="p-dir">
+            <option value="0">+X</option>
+            <option value="1">-X</option>
+            <option value="2">+Z</option>
+            <option value="3">-Z</option>
+          </select>
+        </label>
         <div class="color-fields">
           <label>Color <input id="p-color" type="color" /></label>
           <label class="emi"><input id="p-emi-on" type="checkbox" /> Emissive
             <input id="p-emi" type="color" />
           </label>
         </div>
-        <p class="future">Textures &amp; particle effects: coming soon.</p>
+        <label class="field texture-fields">TEXTURE
+          <select id="p-texture"></select>
+        </label>
+        <p class="future">Particle effects: coming soon.</p>
       </section>
 
       <section id="objlist-sec">

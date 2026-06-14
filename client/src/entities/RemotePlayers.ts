@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { MOVE, lerp, lerpAngle, type PlayerState } from "@drunkr/shared";
 
-/** Render this many milliseconds behind the latest snapshot for smooth interp. */
-const INTERP_DELAY = 100;
+/** Render this many milliseconds behind the latest snapshot for smooth interp.
+ * ~2.5 snapshot intervals at 33 Hz — enough to absorb jitter without much lag. */
+const INTERP_DELAY = 75;
 
 interface Snap {
   time: number;
@@ -196,11 +197,23 @@ class Remote {
     const buf = this.buffer;
     if (buf.length === 0) return;
     let x: number, y: number, z: number, yaw: number, pitch: number;
+    const newest = buf[buf.length - 1];
     if (buf.length === 1) {
       ({ x, y, z, yaw, pitch } = buf[0]);
+    } else if (renderTime >= newest.time) {
+      // Buffer ran dry (late/dropped packets) — briefly extrapolate from the
+      // last two samples instead of freezing, then clamp.
+      const prev = buf[buf.length - 2];
+      const span = newest.time - prev.time || 1;
+      const over = Math.min(renderTime - newest.time, 120);
+      x = newest.x + ((newest.x - prev.x) / span) * over;
+      y = newest.y + ((newest.y - prev.y) / span) * over;
+      z = newest.z + ((newest.z - prev.z) / span) * over;
+      yaw = newest.yaw;
+      pitch = newest.pitch;
     } else {
       let a = buf[0];
-      let b = buf[buf.length - 1];
+      let b = newest;
       for (let i = 0; i < buf.length - 1; i++) {
         if (buf[i].time <= renderTime && buf[i + 1].time >= renderTime) {
           a = buf[i]; b = buf[i + 1]; break;
@@ -213,8 +226,10 @@ class Remote {
     }
 
     this.group.position.set(x, y, z);
-    this.group.rotation.y = yaw;
-    this.head.rotation.x = pitch;
+    // The avatar is modelled with its visor/weapon on +Z, so add π to face the
+    // aim direction (the player's forward is local -Z).
+    this.group.rotation.y = yaw + Math.PI;
+    this.head.rotation.x = -pitch;
 
     this.animate(x, z, dt);
   }

@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { CollisionWorld, type GameMap } from "@drunkr/shared";
+import { CollisionWorld, textureForBox, type GameMap, type Ramp } from "@drunkr/shared";
+import { getTexture, applyBoxUV } from "../render/Textures.js";
 
 /**
  * Builds the visual geometry for a map and exposes:
@@ -17,15 +18,31 @@ export class Arena {
 
     for (const box of map.boxes) {
       const geo = new THREE.BoxGeometry(box.size.x, box.size.y, box.size.z);
-      const mat = new THREE.MeshStandardMaterial({
-        color: box.color,
-        roughness: 0.85,
-        metalness: 0.1,
-        emissive: box.emissive ?? 0x000000,
-        emissiveIntensity: box.emissive ? 0.35 : 0,
-      });
+      const tex = textureForBox(box);
+      let mat: THREE.MeshStandardMaterial;
+      if (tex) {
+        applyBoxUV(geo, box.size, tex);
+        const map3 = getTexture(tex);
+        mat = new THREE.MeshStandardMaterial({
+          map: map3,
+          emissiveMap: map3,
+          emissive: 0xffffff,
+          emissiveIntensity: 0.18,
+          roughness: 0.9,
+          metalness: 0.05,
+        });
+      } else {
+        mat = new THREE.MeshStandardMaterial({
+          color: box.color,
+          roughness: 0.85,
+          metalness: 0.1,
+          emissive: box.emissive ?? 0x000000,
+          emissiveIntensity: box.emissive ? 0.35 : 0,
+        });
+      }
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(box.pos.x, box.pos.y, box.pos.z);
+      if (box.rot) mesh.rotation.set(box.rot.x, box.rot.y, box.rot.z);
       this.group.add(mesh);
       this.colliders.push(mesh);
 
@@ -36,15 +53,19 @@ export class Arena {
           new THREE.LineBasicMaterial({ color: box.emissive }),
         );
         edges.position.copy(mesh.position);
+        edges.rotation.copy(mesh.rotation);
         this.group.add(edges);
       }
     }
 
     for (const pad of map.pads ?? []) {
-      // A bright tilted slab leaning toward its launch direction.
+      // A bright textured slab leaning toward its launch direction.
       const geo = new THREE.BoxGeometry(pad.size.x, pad.size.y, pad.size.z);
+      applyBoxUV(geo, pad.size, "pads");
+      const padTex = getTexture("pads");
       const mat = new THREE.MeshStandardMaterial({
-        color: pad.color, emissive: pad.color, emissiveIntensity: 0.9, metalness: 0.3, roughness: 0.4,
+        map: padTex, emissiveMap: padTex, emissive: pad.color, emissiveIntensity: 0.8,
+        metalness: 0.3, roughness: 0.5,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(pad.pos.x, pad.pos.y, pad.pos.z);
@@ -61,7 +82,37 @@ export class Arena {
       this.group.add(chevron);
     }
 
+    for (const r of map.ramps ?? []) this.addRamp(r);
+
     this.addGrid(map.bounds);
+  }
+
+  /** A textured tilted slab whose top face is the walkable slope surface. */
+  private addRamp(r: Ramp) {
+    const alongX = r.dir === 0 || r.dir === 1;
+    const L = alongX ? r.size.x : r.size.z;
+    const angle = Math.atan2(r.size.y, L);
+    const hyp = Math.hypot(L, r.size.y);
+    const thick = 0.5;
+    const dims = alongX
+      ? new THREE.Vector3(hyp, thick, r.size.z)
+      : new THREE.Vector3(r.size.x, thick, hyp);
+
+    const geo = new THREE.BoxGeometry(dims.x, dims.y, dims.z);
+    const key = textureForBox({ pos: r.pos, size: r.size, color: r.color, emissive: r.emissive, texture: r.texture }) ?? "walls_dark";
+    applyBoxUV(geo, dims, key);
+    const tex = getTexture(key);
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, emissiveMap: tex, emissive: r.emissive ?? 0x666666, emissiveIntensity: 0.2, roughness: 0.9, metalness: 0.05,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(r.pos.x, r.pos.y + r.size.y / 2 - thick * 0.4, r.pos.z);
+    if (r.dir === 0) mesh.rotation.z = angle;
+    else if (r.dir === 1) mesh.rotation.z = -angle;
+    else if (r.dir === 2) mesh.rotation.x = -angle;
+    else mesh.rotation.x = angle;
+    this.group.add(mesh);
+    this.colliders.push(mesh);
   }
 
   /** A subtle neon floor grid for spatial reference. */
