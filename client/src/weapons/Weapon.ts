@@ -18,6 +18,8 @@ export interface WeaponCallbacks {
   onWeapon: (name: string, id: string) => void;
   /** Scope overlay on/off (scoped weapon + aiming down sights). */
   onScope: (active: boolean) => void;
+  /** A shot was fired (for sound), with the weapon id. */
+  onShoot: (weaponId: string) => void;
 }
 
 /**
@@ -28,6 +30,8 @@ export interface WeaponCallbacks {
 export class Weapon {
   def: WeaponDef = WEAPONS[DEFAULT_WEAPON];
   private ammo: number;
+  /** Persisted ammo per weapon id so switching doesn't refill. */
+  private ammoByWeapon: Record<string, number> = {};
   private reloading = false;
   private cooldown = 0;
   private reloadTimer = 0;
@@ -79,11 +83,14 @@ export class Weapon {
   switchTo(id: string): boolean {
     const def = WEAPONS[id];
     if (!def || def.id === this.def.id) return false;
+    // Stash the current weapon's ammo, restore the target's (or a full mag).
+    this.ammoByWeapon[this.def.id] = this.ammo;
     this.def = def;
-    this.ammo = def.magazine;
+    this.ammo = this.ammoByWeapon[id] ?? def.magazine;
     this.reloading = false;
     this.reloadTimer = 0;
     this.cooldown = 0;
+    this.wasFiring = false;
     this.buildViewmodel();
     this.cb.onAmmo(this.ammo, def.magazine);
     this.cb.onWeapon(def.name, def.id);
@@ -181,12 +188,15 @@ export class Weapon {
         this.ammo = this.def.magazine;
         this.cb.onAmmo(this.ammo, this.def.magazine);
       }
-    } else if (wantFire && this.cooldown <= 0 && this.ammo > 0 && !this.local.dead) {
+    } else if (
+      wantFire && this.cooldown <= 0 && !this.local.dead &&
+      (this.def.magazine === 0 || this.ammo > 0)
+    ) {
       this.fire();
     }
 
-    // Auto-reload when empty (also racks the lever-action sniper).
-    if (this.ammo === 0 && !this.reloading) this.reload();
+    // Auto-reload when empty (also racks the lever-action sniper). Melee has no mag.
+    if (this.def.magazine > 0 && this.ammo === 0 && !this.reloading) this.reload();
 
     const progress = this.reloading
       ? 1 - this.reloadTimer / (this.def.reloadMs / 1000)
@@ -210,32 +220,71 @@ export class Weapon {
 
   private fire() {
     this.cooldown = 60 / this.def.fireRate;
-    this.ammo--;
-    this.cb.onAmmo(this.ammo, this.def.magazine);
+    if (this.def.magazine > 0) {
+      this.ammo--;
+      this.cb.onAmmo(this.ammo, this.def.magazine);
+    }
 
-    // Ray from camera centre with spread. Scoped weapons are only accurate
-    // while aiming down sights — hip-firing a sniper gets a heavy penalty.
+    const origin = new THREE.Vector3();
+    this.camera.getWorldPosition(origin);
+    const forward = new THREE.Vector3();
+    this.camera.getWorldDirection(forward);
+
+    // Scoped weapons are only accurate while aiming down sights.
     const scopedIn = this.def.scoped && this.zoom > 0.5;
     const spread =
       this.def.spread + (this.def.scoped && !scopedIn ? this.def.hipPenalty ?? 0 : 0);
-    const origin = new THREE.Vector3();
-    this.camera.getWorldPosition(origin);
-    const dir = new THREE.Vector3();
-    this.camera.getWorldDirection(dir);
-    dir.x += (Math.random() - 0.5) * spread * 2;
-    dir.y += (Math.random() - 0.5) * spread * 2;
-    dir.z += (Math.random() - 0.5) * spread * 2;
-    dir.normalize();
 
+    const pellets = this.def.pellets ?? 1;
+    const dirs: { x: number; y: number; z: number }[] = [];
+    let anyHit = false;
+    let anyHead = false;
+
+    for (let i = 0; i < pellets; i++) {
+      const dir = forward.clone();
+      dir.x += (Math.random() - 0.5) * spread * 2;
+      dir.y += (Math.random() - 0.5) * spread * 2;
+      dir.z += (Math.random() - 0.5) * spread * 2;
+      dir.normalize();
+      dirs.push({ x: dir.x, y: dir.y, z: dir.z });
+
+      const r = this.castRay(origin, dir);
+      if (r.hit) { anyHit = true; anyHead = anyHead || r.head; }
+    }
+
+    this.flash();
+    this.kick = 1;
+
+    // Recoil by weapon (melee has none).
+    const k = this.def.id === "sniper" ? 0.05 : this.def.id === "shotgun" ? 0.06 : this.def.melee ? 0 : 0.013;
+    if (k > 0) this.local.addRecoil(k + Math.random() * k * 0.4, (Math.random() - 0.5) * 0.012);
+
+    // Self-knockback (shotgun rocket-jump): shove opposite the aim direction.
+    if (this.def.selfKnockback) {
+      const imp = this.def.selfKnockback;
+      this.local.applyImpulse(-forward.x * imp, -forward.y * imp, -forward.z * imp);
+    }
+
+    if (anyHit) this.cb.onHit(anyHead);
+    this.cb.onShoot(this.def.id);
+
+    this.net.send({
+      t: "shoot",
+      origin: { x: origin.x, y: origin.y, z: origin.z },
+      dirs,
+      melee: this.def.melee,
+    });
+  }
+
+  /** Cast one pellet locally for tracer + hit feedback. Returns hit info. */
+  private castRay(origin: THREE.Vector3, dir: THREE.Vector3): { hit: boolean; head: boolean } {
     this.raycaster.set(origin, dir);
     this.raycaster.far = this.def.range;
 
-    // Closest wall hit distance.
     const wallHits = this.raycaster.intersectObjects(this.colliders, false);
     const wallDist = wallHits.length ? wallHits[0].distance : Infinity;
 
-    // Player hits.
-    let target: number | undefined;
+    let hitId = -1;
     let head = false;
     let hitDist = Infinity;
     let hitPoint = origin.clone().addScaledVector(dir, this.def.range);
@@ -244,34 +293,17 @@ export class Weapon {
       const hits = this.raycaster.intersectObject(mesh, true);
       if (hits.length && hits[0].distance < hitDist && hits[0].distance < wallDist) {
         hitDist = hits[0].distance;
-        target = id;
+        hitId = id;
         hitPoint = hits[0].point.clone();
         const pPos = this.remotes.position(id);
         head = pPos ? hitPoint.y - pPos.y > MOVE.height * 0.78 : false;
       }
     }
+    if (Number.isFinite(wallDist) && wallDist < hitDist) hitPoint = wallHits[0].point.clone();
 
-    if (Number.isFinite(wallDist) && wallDist < hitDist) {
-      hitPoint = wallHits[0].point.clone();
-    }
-
-    this.spawnTracer(origin, dir, hitPoint);
-    this.flash();
-    this.kick = 1;
-
-    // Recoil — the sniper kicks much harder.
-    const k = this.def.id === "sniper" ? 0.05 : 0.013;
-    this.local.addRecoil(k + Math.random() * k * 0.4, (Math.random() - 0.5) * 0.012);
-
-    if (target !== undefined) this.cb.onHit(head);
-
-    this.net.send({
-      t: "shoot",
-      origin: { x: origin.x, y: origin.y, z: origin.z },
-      dir: { x: dir.x, y: dir.y, z: dir.z },
-      target,
-      head,
-    });
+    // Melee swings don't draw bullet tracers.
+    if (!this.def.melee) this.spawnTracer(origin, dir, hitPoint);
+    return { hit: hitId >= 0, head };
   }
 
   /** Render a tracer for a shot fired by another player. */

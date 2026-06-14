@@ -11,6 +11,7 @@
 
     <!-- HUD -->
     <div id="hud" class="hidden">
+      <div id="hitmarker"></div>
       <div id="crosshair">
         <span></span><span></span><span></span><span></span>
       </div>
@@ -31,9 +32,10 @@
         <span>RELOADING</span>
       </div>
       <div id="killfeed"></div>
-      <div id="hitmarker"></div>
+      <div id="dash" class="ready">DASH</div>
       <div id="damage-flash"></div>
       <div id="respawn" class="hidden">ELIMINATED<br /><small>respawning…</small></div>
+      <div id="banner" class="hidden"></div>
       <div id="scoreboard" class="hidden"></div>
     </div>
 
@@ -43,6 +45,21 @@
         <h1>DRUNKR</h1>
         <p class="tagline">// neon arena · fast-paced FPS</p>
         <input id="name-input" maxlength="16" placeholder="callsign" autocomplete="off" />
+
+        <div class="prefs">
+          <div class="prefs-row">
+            <span class="prefs-label">SKIN</span>
+            <div id="skins"></div>
+          </div>
+          <div class="prefs-row">
+            <span class="prefs-label">PRIMARY</span>
+            <select id="cfg-loadout">
+              <option value="ak">AK-44 · auto</option>
+              <option value="sniper">LVR-50 · sniper</option>
+              <option value="shotgun">DB-12 · shotgun</option>
+            </select>
+          </div>
+        </div>
 
         <div class="lobby-tabs">
           <button class="tab active" data-tab="play">PLAY</button>

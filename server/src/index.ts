@@ -10,10 +10,13 @@ import {
   type BotDifficulty,
   type RoomConfig,
   type RoomInfo,
+  type PlayerPrefs,
   MOVE,
+  MATCH,
   PLAYER,
   WEAPONS,
   DEFAULT_WEAPON,
+  LOADOUT_WEAPONS,
   SNAPSHOT_RATE,
   TICK_RATE,
   MAPS,
@@ -47,6 +50,10 @@ interface BotAI {
   retargetAt: number;
   nextShotAt: number;
   reactAt: number;
+  // Movement sub-state for the shared stepMovement model.
+  sliding: boolean;
+  slideTime: number;
+  jumpsUsed: number;
 }
 
 /** A participant: a connected client (ws set) or a bot (ai set). */
@@ -58,6 +65,11 @@ interface Actor {
   grounded: boolean;
   lastSeen: number;
   ai?: BotAI;
+  /** Earliest time (ms) this actor is allowed to fire again (anti-cheat). */
+  nextShot: number;
+  /** Sliding window message counter for flood protection. */
+  msgWindowStart: number;
+  msgCount: number;
 }
 
 interface Room {
@@ -165,6 +177,21 @@ function clamp(x: number, lo: number, hi: number) {
   return x < lo ? lo : x > hi ? hi : x;
 }
 
+const isFiniteNum = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+
+function validVec(v: unknown): v is Vec3 {
+  return (
+    !!v && typeof v === "object" &&
+    isFiniteNum((v as Vec3).x) && isFiniteNum((v as Vec3).y) && isFiniteNum((v as Vec3).z)
+  );
+}
+
+/** Strip control chars / markup and clamp length for display names. */
+function sanitizeName(name: unknown): string {
+  if (typeof name !== "string") return "";
+  return name.replace(/[<>&]/g, "").slice(0, 16);
+}
+
 function pickSpawn(room: Room): Vec3 {
   let best = room.map.spawns[0];
   let bestDist = -Infinity;
@@ -181,15 +208,17 @@ function pickSpawn(room: Room): Vec3 {
   return { x: best.x, y: best.y, z: best.z };
 }
 
-function makeState(room: Room, id: number, name: string): PlayerState {
+function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): PlayerState {
   const s = pickSpawn(room);
+  const hue = isFiniteNum(prefs?.skin) ? clamp(prefs!.skin!, 0, 1) : Math.random();
+  const weapon = prefs?.weapon && LOADOUT_WEAPONS.includes(prefs.weapon) ? prefs.weapon : DEFAULT_WEAPON;
   return {
     id, name: name.slice(0, 16) || `runner${id}`,
     pos: { x: s.x, y: s.y, z: s.z },
     yaw: 0, pitch: 0,
-    health: PLAYER.maxHealth, hue: Math.random(),
+    health: PLAYER.maxHealth, hue,
     kills: 0, deaths: 0, dead: false,
-    weapon: DEFAULT_WEAPON,
+    weapon,
   };
 }
 
@@ -216,22 +245,38 @@ function rayHitsPlayer(origin: Vec3, dir: Vec3, p: PlayerState) {
   return { hit: false, head: false, dist: Infinity };
 }
 
-function handleShoot(room: Room, shooter: Actor, origin: Vec3, dir: Vec3) {
-  const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
-  const d = { x: dir.x / len, y: dir.y / len, z: dir.z / len };
-  broadcast(room, { t: "shot", from: shooter.id, origin, dir: d }, shooter.id);
+function handleShoot(room: Room, shooter: Actor, origin: Vec3, dirs: Vec3[], melee: boolean) {
+  const w = weaponOf(shooter);
+  // Anti-cheat: the muzzle must be near the shooter's actual eye position so a
+  // client can't fire rays from across the map.
+  const e = eye(shooter.state);
+  if (Math.hypot(origin.x - e.x, origin.y - e.y, origin.z - e.z) > 3) return;
 
-  let bestId = -1, bestDist = weaponOf(shooter).range, bestHead = false;
-  for (const [id, a] of room.actors) {
-    if (id === shooter.id || a.state.dead) continue;
-    const res = rayHitsPlayer(origin, d, a.state);
-    // Bullets are blocked by walls between shooter and victim.
-    if (res.hit && res.dist < bestDist && !room.world.segmentBlocked(origin, a.state.pos)) {
-      bestDist = res.dist; bestId = id; bestHead = res.head;
-    }
+  const norm: Vec3[] = [];
+  for (const d of dirs) {
+    const len = Math.hypot(d.x, d.y, d.z) || 1;
+    norm.push({ x: d.x / len, y: d.y / len, z: d.z / len });
   }
-  if (bestId < 0) return;
-  applyDamage(room, shooter, room.actors.get(bestId)!, bestHead);
+  if (norm.length === 0) return;
+
+  broadcast(
+    room,
+    { t: "shot", from: shooter.id, origin, dirs: norm, melee: melee || !!w.melee, weapon: w.id },
+    shooter.id,
+  );
+
+  for (const d of norm) {
+    let bestId = -1, bestDist = w.range, bestHead = false;
+    for (const [id, a] of room.actors) {
+      if (id === shooter.id || a.state.dead) continue;
+      const res = rayHitsPlayer(origin, d, a.state);
+      // Bullets are blocked by walls between shooter and victim.
+      if (res.hit && res.dist < bestDist && !room.world.segmentBlocked(origin, a.state.pos)) {
+        bestDist = res.dist; bestId = id; bestHead = res.head;
+      }
+    }
+    if (bestId >= 0) applyDamage(room, shooter, room.actors.get(bestId)!, bestHead);
+  }
 }
 
 function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean) {
@@ -248,6 +293,15 @@ function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean) 
     attacker.state.kills++;
     broadcast(room, { t: "kill", killer: attacker.id, victim: victim.id, head });
     setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
+
+    // Kill-limit win condition: announce, then reset scores and play on.
+    if (attacker.state.kills >= MATCH.killLimit) {
+      broadcast(room, { t: "matchend", winner: attacker.id, name: attacker.state.name });
+      for (const a of room.actors.values()) {
+        a.state.kills = 0;
+        a.state.deaths = 0;
+      }
+    }
   }
 }
 
@@ -274,14 +328,17 @@ function spawnBot(room: Room) {
   const name = BOT_NAMES[(id - 1) % BOT_NAMES.length];
   const now = Date.now();
   const state = makeState(room, id, name);
-  // ~35% of bots carry the sniper, the rest the AK.
-  state.weapon = Math.random() < 0.35 ? "sniper" : "ak";
+  // Bots roll a random loadout: AK, sniper, or shotgun.
+  const roll = Math.random();
+  state.weapon = roll < 0.3 ? "sniper" : roll < 0.5 ? "shotgun" : "ak";
   room.actors.set(id, {
     id, ws: null, state,
     vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
+    nextShot: 0, msgWindowStart: now, msgCount: 0,
     ai: {
       waypoint: randomPoint(room), repathAt: now + 2000,
       nextJumpAt: now + 500, targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
+      sliding: false, slideTime: 0, jumpsUsed: 0,
     },
   });
 }
@@ -364,11 +421,23 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
 
   if (!targetVisible && wpDist > 0.001) me.yaw = Math.atan2(wishX, wishZ);
 
-  const moveState = { pos: me.pos, vel: bot.vel, grounded: bot.grounded };
+  const moveState = {
+    pos: me.pos, vel: bot.vel, grounded: bot.grounded,
+    sliding: ai.sliding, slideTime: ai.slideTime, jumpsUsed: ai.jumpsUsed,
+  };
   const res = stepMovement(
-    moveState, { wishX, wishZ, wishSpeed: MOVE.speed, jump, crouch: false }, room.world, dt,
+    moveState,
+    {
+      wishX, wishZ, wishSpeed: MOVE.speed,
+      jump, jumpEdge: false, crouch: false, crouchEdge: false,
+      speedMul: 1, maxJumps: 1, canSlide: false,
+    },
+    room.world, dt,
   );
   bot.grounded = moveState.grounded;
+  ai.sliding = moveState.sliding;
+  ai.slideTime = moveState.slideTime;
+  ai.jumpsUsed = moveState.jumpsUsed;
   // Stuck against a wall → repath soon (to a random nearby point to escape).
   if (res.hitWall && now + 300 < ai.repathAt) {
     ai.repathAt = now + 300;
@@ -387,15 +456,20 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
     // Snipers wait for a tighter lock; their one-shot is balanced by extra
     // spread and the lever-action cycle time.
     const sniper = w.id === "sniper";
-    const spread = diff.spread + (sniper ? 0.04 : 0);
+    const spread = diff.spread + (sniper ? 0.04 : w.id === "shotgun" ? 0.07 : 0);
     if (aimDot > (sniper ? 0.985 : 0.96)) {
-      handleShoot(room, bot, o, {
-        x: dx + (Math.random() - 0.5) * spread,
-        y: dy + (Math.random() - 0.5) * spread,
-        z: dz + (Math.random() - 0.5) * spread,
-      });
+      const pellets = w.pellets ?? 1;
+      const shotDirs: Vec3[] = [];
+      for (let p = 0; p < pellets; p++) {
+        shotDirs.push({
+          x: dx + (Math.random() - 0.5) * spread,
+          y: dy + (Math.random() - 0.5) * spread,
+          z: dz + (Math.random() - 0.5) * spread,
+        });
+      }
+      handleShoot(room, bot, o, shotDirs, !!w.melee);
       // Never fire faster than the weapon can cycle.
-      const cycle = Math.max(60_000 / w.fireRate, w.magazine <= 1 ? w.reloadMs : 0);
+      const cycle = Math.max(60_000 / w.fireRate, w.magazine === 1 ? w.reloadMs : 0);
       ai.nextShotAt = now + Math.max(rng(diff.fire[0], diff.fire[1]), cycle);
     }
   }
@@ -409,10 +483,14 @@ wss.on("connection", (ws) => {
   let actor: Actor | null = null;
   let room: Room | null = null;
 
-  function joinRoom(target: Room, name: string) {
+  function joinRoom(target: Room, name: string, prefs?: PlayerPrefs) {
     const id = nextId++;
-    const state = makeState(target, id, name);
-    actor = { id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: Date.now() };
+    const state = makeState(target, id, sanitizeName(name), prefs);
+    const now = Date.now();
+    actor = {
+      id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
+      nextShot: 0, msgWindowStart: now, msgCount: 0,
+    };
     room = target;
     target.actors.set(id, actor);
     send(ws, {
@@ -425,8 +503,19 @@ wss.on("connection", (ws) => {
   }
 
   ws.on("message", (raw) => {
+    // Flood protection: cap messages per second per connection.
+    if (actor) {
+      const now = Date.now();
+      if (now - actor.msgWindowStart > 1000) {
+        actor.msgWindowStart = now;
+        actor.msgCount = 0;
+      }
+      if (++actor.msgCount > 240) return; // ~4x the expected steady rate
+    }
+
     let msg: ClientMessage;
     try { msg = decode<ClientMessage>(raw.toString()); } catch { return; }
+    if (!msg || typeof msg.t !== "string") return;
 
     if (msg.t === "rooms") {
       send(ws, { t: "roomlist", rooms: roomList() });
@@ -435,7 +524,7 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "create") {
       if (actor) return;
-      joinRoom(createRoom(msg.config, false), msg.name);
+      joinRoom(createRoom(msg.config, false), msg.name, msg);
       return;
     }
 
@@ -444,9 +533,9 @@ wss.on("connection", (ws) => {
       const target = msg.roomId && rooms.get(msg.roomId);
       if (msg.roomId && (!target || realCount(target) >= MAX_PLAYERS)) {
         // Requested room is gone/full — fall back to quick play.
-        joinRoom(quickPlayRoom(), msg.name);
+        joinRoom(quickPlayRoom(), msg.name, msg);
       } else {
-        joinRoom(target || quickPlayRoom(), msg.name);
+        joinRoom(target || quickPlayRoom(), msg.name, msg);
       }
       return;
     }
@@ -455,25 +544,41 @@ wss.on("connection", (ws) => {
     actor.lastSeen = Date.now();
 
     switch (msg.t) {
-      case "state":
+      case "state": {
         if (actor.state.dead) break;
+        if (!validVec(msg.pos) || !isFiniteNum(msg.yaw) || !isFiniteNum(msg.pitch)) break;
+        const b = room.map.bounds + 1;
         actor.state.pos = {
-          x: clamp(msg.pos.x, -room.map.bounds, room.map.bounds),
-          y: clamp(msg.pos.y, -5, 60),
-          z: clamp(msg.pos.z, -room.map.bounds, room.map.bounds),
+          x: clamp(msg.pos.x, -b, b),
+          y: clamp(msg.pos.y, -15, 80),
+          z: clamp(msg.pos.z, -b, b),
         };
         actor.state.yaw = msg.yaw;
-        actor.state.pitch = msg.pitch;
+        actor.state.pitch = clamp(msg.pitch, -Math.PI, Math.PI);
         break;
-      case "shoot":
+      }
+      case "shoot": {
         if (actor.state.dead) break;
-        handleShoot(room, actor, msg.origin, msg.dir);
+        if (!validVec(msg.origin) || !Array.isArray(msg.dirs)) break;
+        const w = weaponOf(actor);
+        const now = Date.now();
+        // Anti-cheat: enforce the weapon's cycle time between trigger pulls.
+        const cycle = Math.max(60_000 / w.fireRate, w.magazine === 1 ? w.reloadMs : 0) * 0.85;
+        if (now < actor.nextShot) break;
+        actor.nextShot = now + cycle;
+        const maxDirs = Math.max(1, w.pellets ?? 1);
+        const dirs = msg.dirs.filter(validVec).slice(0, maxDirs);
+        handleShoot(room, actor, msg.origin, dirs, !!msg.melee);
         break;
+      }
       case "respawn":
         if (actor.state.dead) respawn(room, actor);
         break;
       case "weapon":
-        if (WEAPONS[msg.weapon]) actor.state.weapon = msg.weapon;
+        // Players may only switch to loadout weapons or the always-available katana.
+        if (WEAPONS[msg.weapon] && (LOADOUT_WEAPONS.includes(msg.weapon) || msg.weapon === "katana")) {
+          actor.state.weapon = msg.weapon;
+        }
         break;
     }
   });

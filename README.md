@@ -29,53 +29,87 @@ The client auto-discovers the server on the same host, port 2567
 (override with `?server=ws://host:port`).
 
 **Server env vars:** `BOTS` (number of AI bots, default 4), `MAP`
-(`neon_yard` or `overdrive`, default `neon_yard`), `PORT` (default 2567).
-e.g. `BOTS=6 MAP=overdrive npm run dev:server`.
+(`neon_yard`, `overdrive`, or `blacksite`, default `neon_yard`), `PORT`
+(default 2567). e.g. `BOTS=6 MAP=blacksite npm run dev:server`.
 
 ### Controls
 
 `WASD` move · `SPACE` jump (hold to auto-bhop) · `SHIFT`/`C` crouch-slide ·
-`MOUSE` aim · `CLICK` fire (hold to auto) · `R` reload · `TAB` scoreboard ·
-`ESC` release mouse (click to re-lock)
+`F` dash · `MOUSE` aim · `LMB` fire · `RMB` aim-down-sights (scope) ·
+`1` AK · `2` sniper · `3` shotgun · `Q` katana · `R` reload ·
+`TAB` scoreboard · `ESC` release mouse (click to re-lock)
 
-**Movement tech:** Quake/Source-style — air-strafe (hold a strafe key + turn
-the mouse the same way mid-air) to gain speed past the ground cap, and hold
-`SPACE` to bunny-hop on landing without losing momentum. Crouch removes ground
-friction for slides. Tuning lives in `MOVE` in `shared/src/constants.ts`.
+**Movement tech:**
+- **Air-strafe** (strafe key + matching mouse turn) to exceed the ground cap.
+- **Bunny-hop** — hold `SPACE` to keep momentum on landing.
+- **Slide** — crouch while running fast: a speed boost + low friction; jump out
+  of it to carry the momentum (slide-jump).
+- **Dash** (`F`) — a burst in your move direction, 4 s cooldown.
+- **Rocket-jump** — fire the shotgun at your feet; the recoil launches you.
+- **Katana** (`Q`) — while equipped you move 35 % faster and get a double jump.
+
+Tuning lives in `MOVE` / `SLIDE` / `DASH` in `shared/src/constants.ts`.
+
+### Weapons
+
+| Slot | Weapon  | Style                                                    |
+| ---- | ------- | -------------------------------------------------------- |
+| `1`  | AK-44   | full-auto assault rifle                                  |
+| `2`  | LVR-50  | lever-action **scoped sniper**, one-shot, ADS with `RMB` |
+| `3`  | DB-12   | double-barrel **shotgun**, 9 pellets, self-knockback     |
+| `Q`  | NEON-EDGE | **melee katana** — one-shot, +speed, double jump       |
+
+Each weapon keeps its own ammo when you switch. Bots roll a random loadout.
+
+### Modes & cosmetics
+
+- **FFA kill-limit** match (first to 30) — scores reset and play continues.
+- **Skins** + **starting loadout** picked in the lobby.
+- **Server browser** — create rooms (map, bots on/off, count, difficulty) or
+  quick-play into the most populated one.
 
 ## Architecture notes
 
 - **Movement** is client-predicted: each client simulates its own physics
   (gravity, jumping, accel/friction, AABB collision against the map boxes) and
   streams its state to the server at 30 Hz.
-- **The server** is authoritative over health, damage, deaths and respawns. It
-  re-runs each shot as a ray-vs-capsule test rather than trusting the client's
-  claimed hit, and clamps positions to the arena bounds.
+- **The server** is authoritative over health, damage, deaths, respawns and
+  scores. It re-runs each shot (ray-vs-capsule, per shooter's weapon), checks
+  wall occlusion and muzzle position, enforces fire-rate, and validates/clamps
+  all input. See [SECURITY.md](SECURITY.md) for the full anti-cheat audit.
 - **Other players** are rendered ~100 ms behind the latest snapshot and
-  interpolated between snapshots for smooth motion (server broadcasts at 20 Hz).
+  interpolated for smooth motion (server broadcasts at 20 Hz). Avatars have a
+  procedural walk cycle and the held weapon model; nametags are wall-occluded.
+- **Audio** is fully procedural (Web Audio synth, `client/src/audio/Sfx.ts`) —
+  no asset files, no licensing.
 - **Bots** are server-side actors sharing the exact same movement model
   (`shared/src/movement.ts`) as players — they wander, bunny-hop, acquire the
   nearest visible enemy (line-of-sight tested against geometry), aim with a
-  reaction delay, and shoot. They kill and are killed like anyone else.
+  difficulty-tuned reaction delay, and shoot their (random) loadout.
 - **Maps** are lists of axis-aligned boxes (`shared/src/map.ts`) used for both
-  rendering and collision — easy to author new arenas. Ships with *Neon Yard*
-  and *Overdrive*.
+  rendering and collision. Ships with *Neon Yard* (large), *Overdrive* (bases),
+  and *Blacksite* (indoor maze).
+
+## Sharing with a tester
+
+See [SHARING.md](SHARING.md) for a zero-config way to let a QA tester on another
+PC play on your local server via a Cloudflare quick tunnel.
 
 ## Project layout
 
 ```
-shared/src/   protocol.ts · constants.ts · map.ts · math.ts
-server/src/   index.ts  (rooms, tick loop, hit validation, respawns)
+shared/src/   protocol · constants · map · math · collision · movement
+server/src/   index.ts  (rooms, bot AI, hit validation, anti-cheat, modes)
 client/src/
   core/Game.ts          orchestration + main loop
   render/Renderer.ts    Three.js scene, pixelation, lighting, fog
   world/Arena.ts        builds map meshes + colliders
-  physics/Collision.ts  AABB capsule collision
-  entities/             LocalPlayer (FPS controller) · RemotePlayers (interp)
-  weapons/Weapon.ts     hitscan, viewmodel, tracers, recoil
+  entities/             LocalPlayer (FPS controller) · RemotePlayers (animated)
+  weapons/Weapon.ts     weapons, scope, recoil, knockback, tracers
+  audio/Sfx.ts          procedural Web Audio sound
   input/Input.ts        pointer lock, keyboard/mouse
   net/Network.ts        websocket client
-  ui/HUD.ts             crosshair, health, ammo, killfeed, scoreboard
+  ui/HUD.ts             crosshair, ammo, killfeed, scoreboard, scope, banner
 ```
 
 ## Roadmap ideas

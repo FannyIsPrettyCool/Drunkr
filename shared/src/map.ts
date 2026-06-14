@@ -63,45 +63,62 @@ function wall(
  */
 export const NEON_YARD: GameMap = {
   name: "Neon Yard",
-  bounds: 45,
+  bounds: 56,
   spawns: [
-    v(-38, 0, -38), v(38, 0, 38), v(-38, 0, 38), v(38, 0, -38),
-    v(0, 0, -40), v(0, 0, 40), v(-40, 0, 0), v(40, 0, 0),
+    v(-48, 0, -48), v(48, 0, 48), v(-48, 0, 48), v(48, 0, -48),
+    v(0, 0, -50), v(0, 0, 50), v(-50, 0, 0), v(50, 0, 0),
+    v(-26, 0, -26), v(26, 0, 26), v(-26, 0, 26), v(26, 0, -26),
+    v(0, 0, -22), v(0, 0, 22), v(-22, 0, 0), v(22, 0, 0),
   ],
   boxes: [
-    ...shell(45, 9),
+    ...shell(56, 10),
 
-    // Central stepped plaza + tower.
-    { pos: v(0, 0.5, 0), size: v(20, 1, 20), color: SLATE2, emissive: CYAN },
-    { pos: v(0, 1.5, 0), size: v(12, 1, 12), color: SLATE2, emissive: PINK },
-    { pos: v(0, 5, 0), size: v(4, 10, 4), color: SLATE3, emissive: CYAN },
-    { pos: v(0, 10.2, 0), size: v(6, 0.4, 6), color: SLATE3, emissive: PINK },
+    // Central stepped plaza + tower (a strong mid landmark).
+    { pos: v(0, 0.5, 0), size: v(22, 1, 22), color: SLATE2, emissive: CYAN },
+    { pos: v(0, 1.5, 0), size: v(13, 1, 13), color: SLATE2, emissive: PINK },
+    { pos: v(0, 5.5, 0), size: v(4, 11, 4), color: SLATE3, emissive: CYAN },
+    { pos: v(0, 11.2, 0), size: v(7, 0.4, 7), color: SLATE3, emissive: PINK },
+    // Walls around the plaza break long sightlines (with gaps).
+    wall(-11, -7, -11, 7, SLATE2, CYAN, 3.5),
+    wall(11, -7, 11, 7, SLATE2, CYAN, 3.5),
+    wall(-7, 11, 7, 11, SLATE2, PINK, 3.5),
+    wall(-7, -11, 7, -11, SLATE2, PINK, 3.5),
 
-    // Ramps up onto the plaza (low steps).
-    { pos: v(0, 0.5, 13), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
-    { pos: v(0, 0.5, -13), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
-    { pos: v(13, 0.5, 0), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
-    { pos: v(-13, 0.5, 0), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
+    // Ramps up onto the plaza.
+    { pos: v(0, 0.5, 14), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
+    { pos: v(0, 0.5, -14), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
+    { pos: v(14, 0.5, 0), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
+    { pos: v(-14, 0.5, 0), size: v(6, 1, 6), color: SLATE2, emissive: PINK },
+
+    // Mid-ring buildings (cover, climbable, block sightlines).
+    { pos: v(-26, 2.5, -8), size: v(8, 5, 8), color: SLATE2, emissive: GREEN },
+    { pos: v(26, 2.5, 8), size: v(8, 5, 8), color: SLATE2, emissive: GREEN },
+    { pos: v(-8, 2.5, 26), size: v(8, 5, 8), color: SLATE2, emissive: AMBER },
+    { pos: v(8, 2.5, -26), size: v(8, 5, 8), color: SLATE2, emissive: AMBER },
+    { pos: v(-28, 1.5, 20), size: v(6, 3, 6), color: SLATE3, emissive: CYAN },
+    { pos: v(28, 1.5, -20), size: v(6, 3, 6), color: SLATE3, emissive: CYAN },
 
     // Flank cover lanes (symmetric crates).
-    { pos: v(-18, 1.25, -10), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
-    { pos: v(18, 1.25, 10), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
-    { pos: v(-10, 1.25, -18), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
-    { pos: v(10, 1.25, 18), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
-    { pos: v(-22, 1.5, 6), size: v(2, 3, 8), color: SLATE2, emissive: GREEN },
-    { pos: v(22, 1.5, -6), size: v(2, 3, 8), color: SLATE2, emissive: GREEN },
-    { pos: v(6, 1.5, -22), size: v(8, 3, 2), color: SLATE2, emissive: GREEN },
-    { pos: v(-6, 1.5, 22), size: v(8, 3, 2), color: SLATE2, emissive: GREEN },
+    { pos: v(-20, 1.25, -22), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
+    { pos: v(20, 1.25, 22), size: v(3, 2.5, 3), color: SLATE3, emissive: CYAN },
+    { pos: v(-22, 1.5, 4), size: v(2, 3, 8), color: SLATE2, emissive: GREEN },
+    { pos: v(22, 1.5, -4), size: v(2, 3, 8), color: SLATE2, emissive: GREEN },
 
     // Corner sniper towers with access ramps.
-    { pos: v(-34, 2, -34), size: v(10, 4, 10), color: SLATE2, emissive: AMBER },
-    { pos: v(34, 2, 34), size: v(10, 4, 10), color: SLATE2, emissive: AMBER },
-    { pos: v(-30, 1, -26), size: v(6, 2, 4), color: SLATE2, emissive: AMBER },
-    { pos: v(30, 1, 26), size: v(6, 2, 4), color: SLATE2, emissive: AMBER },
+    { pos: v(-44, 3, -44), size: v(12, 6, 12), color: SLATE2, emissive: AMBER },
+    { pos: v(44, 3, 44), size: v(12, 6, 12), color: SLATE2, emissive: AMBER },
+    { pos: v(44, 3, -44), size: v(12, 6, 12), color: SLATE2, emissive: PINK },
+    { pos: v(-44, 3, 44), size: v(12, 6, 12), color: SLATE2, emissive: PINK },
+    { pos: v(-38, 1, -34), size: v(6, 2, 4), color: SLATE2, emissive: AMBER },
+    { pos: v(38, 1, 34), size: v(6, 2, 4), color: SLATE2, emissive: AMBER },
+    { pos: v(38, 1, -34), size: v(6, 2, 4), color: SLATE2, emissive: PINK },
+    { pos: v(-38, 1, 34), size: v(6, 2, 4), color: SLATE2, emissive: PINK },
 
-    // Mid scattered low cover.
-    { pos: v(-14, 0.75, 14), size: v(4, 1.5, 4), color: SLATE3, emissive: PINK },
-    { pos: v(14, 0.75, -14), size: v(4, 1.5, 4), color: SLATE3, emissive: PINK },
+    // Outer perimeter cover so spawns aren't fully exposed.
+    { pos: v(-40, 1.5, 4), size: v(2, 3, 10), color: SLATE3, emissive: GREEN },
+    { pos: v(40, 1.5, -4), size: v(2, 3, 10), color: SLATE3, emissive: GREEN },
+    { pos: v(4, 1.5, 40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
+    { pos: v(-4, 1.5, -40), size: v(10, 3, 2), color: SLATE3, emissive: GREEN },
   ],
 };
 
@@ -116,6 +133,7 @@ export const OVERDRIVE: GameMap = {
   spawns: [
     v(-34, 0, 0), v(34, 0, 0), v(-30, 0, -22), v(30, 0, 22),
     v(-30, 0, 22), v(30, 0, -22), v(0, 0, -34), v(0, 0, 34),
+    v(-16, 0, 16), v(16, 0, -16), v(-16, 0, -16), v(16, 0, 16),
   ],
   boxes: [
     ...shell(40, 8),
@@ -160,6 +178,7 @@ export const BLACKSITE: GameMap = {
   spawns: [
     v(-30, 0, -32), v(30, 0, -32), v(-30, 0, 32), v(30, 0, 32),
     v(-32, 0, -8), v(32, 0, 8), v(0, 0, -8), v(0, 0, 8),
+    v(-32, 0, 18), v(32, 0, -18), v(18, 0, 20), v(-18, 0, -20),
   ],
   boxes: [
     ...shell(36, 7),

@@ -1,5 +1,12 @@
 import * as THREE from "three";
-import { MOVE, clamp, stepMovement, type CollisionWorld } from "@drunkr/shared";
+import {
+  MOVE,
+  DASH,
+  clamp,
+  stepMovement,
+  type MoveState,
+  type CollisionWorld,
+} from "@drunkr/shared";
 import type { Input } from "../input/Input.js";
 
 const SENSITIVITY = 0.0022;
@@ -7,8 +14,7 @@ const PITCH_LIMIT = Math.PI / 2 - 0.01;
 
 /**
  * The locally-controlled player. Runs its own movement simulation (client
- * prediction) and drives the camera. Position is the feet; the camera sits at
- * eye height with a little procedural bob/recoil offset.
+ * prediction) and drives the camera.
  */
 export class LocalPlayer {
   pos = new THREE.Vector3();
@@ -18,12 +24,26 @@ export class LocalPlayer {
   grounded = false;
   dead = false;
   crouching = false;
+  sliding = false;
+  private slideTime = 0;
+  private jumpsUsed = 0;
+
+  // Movement modifiers set by the equipped weapon.
+  speedMul = 1;
+  maxJumps = 1;
+  canSlide = true;
+
+  /** Dash ability cooldown (s remaining). */
+  dashCooldown = 0;
 
   /** Procedural recoil applied to the camera (radians), decays each frame. */
   recoil = new THREE.Vector2();
   private bobTime = 0;
-  /** Smoothed eye height (lerps toward standing/crouching). */
   private eye = MOVE.eyeHeight;
+  private wasJump = false;
+  private wasCrouch = false;
+  private lastWishX = 0;
+  private lastWishZ = -1;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -34,9 +54,8 @@ export class LocalPlayer {
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.dead = false;
-    // Face the arena centre so players don't stare at a wall on spawn.
-    // Camera forward after rotateY(yaw) is (-sin yaw, -cos yaw); facing the
-    // origin from (x,z) means yaw = atan2(x, z).
+    this.sliding = false;
+    this.jumpsUsed = 0;
     if (Math.hypot(x, z) > 1) {
       this.yaw = Math.atan2(x, z);
       this.pitch = 0;
@@ -54,17 +73,35 @@ export class LocalPlayer {
     this.recoil.y += yawKick;
   }
 
-  update(input: Input, dt: number) {
+  /** Apply an external velocity impulse (e.g. shotgun self-knockback). */
+  applyImpulse(x: number, y: number, z: number) {
+    this.vel.x += x;
+    this.vel.y += y;
+    this.vel.z += z;
+    if (y > 0.5) this.grounded = false;
+  }
+
+  /** Dash burst in the current move/look direction. Returns true if it fired. */
+  tryDash(): boolean {
+    if (this.dead || this.dashCooldown > 0) return false;
+    const dx = this.lastWishX, dz = this.lastWishZ;
+    this.vel.x += dx * DASH.speed;
+    this.vel.z += dz * DASH.speed;
+    if (!this.grounded) this.vel.y = Math.max(this.vel.y, 1.5);
+    this.dashCooldown = DASH.cooldownMs / 1000;
+    return true;
+  }
+
+  update(input: Input, dt: number): { slideStarted: boolean; landed: boolean; jumped: boolean } {
+    if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+
     if (this.dead) {
       this.updateCamera(0, dt);
-      return;
+      return { slideStarted: false, landed: false, jumped: false };
     }
 
     this.crouching = input.crouching;
 
-    // Wish direction in world space. The camera (rotateY(yaw)) looks down
-    // (-sin yaw, -cos yaw); W (wish.z = -1) must move that way and D
-    // (wish.x = +1) along the camera's right (cos yaw, -sin yaw).
     const wish = input.moveAxis();
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
@@ -74,43 +111,73 @@ export class LocalPlayer {
     if (wlen > 0) {
       wx /= wlen;
       wz /= wlen;
+      this.lastWishX = wx;
+      this.lastWishZ = wz;
+    } else {
+      // Default dash direction is where you're looking.
+      this.lastWishX = -sin;
+      this.lastWishZ = -cos;
     }
     const wishSpeed = wlen > 0 ? MOVE.speed : 0;
 
-    // Shared movement model (friction, accel, air-strafe, bhop, gravity, collide).
-    const state = { pos: this.pos, vel: this.vel, grounded: this.grounded };
+    const jumpEdge = input.jumping && !this.wasJump;
+    this.wasJump = input.jumping;
+    const crouchEdge = this.crouching && !this.wasCrouch;
+    this.wasCrouch = this.crouching;
+
+    const wasGrounded = this.grounded;
+    const wasSliding = this.sliding;
+    const wasJumps = this.jumpsUsed;
+
+    const state: MoveState = {
+      pos: this.pos, vel: this.vel, grounded: this.grounded,
+      sliding: this.sliding, slideTime: this.slideTime, jumpsUsed: this.jumpsUsed,
+    };
     stepMovement(
       state,
-      { wishX: wx, wishZ: wz, wishSpeed, jump: input.jumping, crouch: this.crouching },
+      {
+        wishX: wx, wishZ: wz, wishSpeed,
+        jump: input.jumping, jumpEdge,
+        crouch: this.crouching, crouchEdge,
+        speedMul: this.speedMul, maxJumps: this.maxJumps, canSlide: this.canSlide,
+      },
       this.world,
       dt,
     );
     this.grounded = state.grounded;
+    this.sliding = state.sliding;
+    this.slideTime = state.slideTime;
+    this.jumpsUsed = state.jumpsUsed;
 
-    // Fell out of the world — clamp back up.
-    if (this.pos.y < -10) this.spawn(this.pos.x, 5, this.pos.z);
+    if (this.pos.y < -12) this.spawn(this.pos.x, 5, this.pos.z);
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.bobTime += dt * speed;
     this.updateCamera(speed, dt);
+
+    return {
+      slideStarted: this.sliding && !wasSliding,
+      landed: this.grounded && !wasGrounded,
+      jumped: this.jumpsUsed > wasJumps,
+    };
   }
 
   private updateCamera(speed: number, dt: number) {
-    // Decay recoil back to centre.
     this.recoil.multiplyScalar(0.86);
 
-    // Smoothly settle eye height toward standing/crouching.
-    const targetEye = this.crouching ? MOVE.crouchEyeHeight : MOVE.eyeHeight;
+    const targetEye = this.crouching || this.sliding ? MOVE.crouchEyeHeight : MOVE.eyeHeight;
     this.eye += (targetEye - this.eye) * Math.min(1, 14 * dt);
 
-    const bob = this.grounded
+    const bob = this.grounded && !this.sliding
       ? Math.sin(this.bobTime * 1.8) * 0.025 * Math.min(1, speed / MOVE.speed)
       : 0;
+    // A slight camera roll while sliding for feel.
+    const slideRoll = this.sliding ? 0.06 : 0;
 
     this.camera.position.set(this.pos.x, this.pos.y + this.eye + bob, this.pos.z);
     this.camera.rotation.set(0, 0, 0);
     this.camera.rotateY(this.yaw);
     this.camera.rotateX(this.pitch + this.recoil.x);
-    this.camera.rotateZ(this.recoil.y * 0.4);
+    this.camera.rotateZ(this.recoil.y * 0.4 + slideRoll);
   }
 }

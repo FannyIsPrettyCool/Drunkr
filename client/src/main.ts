@@ -18,8 +18,34 @@ const cfgBots = document.getElementById("cfg-bots") as HTMLInputElement;
 const cfgBotCount = document.getElementById("cfg-botcount") as HTMLInputElement;
 const cfgBotCountVal = document.getElementById("cfg-botcount-val")!;
 const cfgName = document.getElementById("cfg-name") as HTMLInputElement;
+const skinsEl = document.getElementById("skins")!;
+const loadoutSel = document.getElementById("cfg-loadout") as HTMLSelectElement;
 
 nameInput.value = localStorage.getItem("drunkr.name") ?? "";
+
+// --- Skins -----------------------------------------------------------------
+const SKIN_HUES = [0.0, 0.08, 0.13, 0.33, 0.5, 0.58, 0.75, 0.85];
+let selectedHue = Number(localStorage.getItem("drunkr.skin") ?? SKIN_HUES[5]);
+for (const hue of SKIN_HUES) {
+  const sw = document.createElement("button");
+  sw.className = "skin";
+  sw.style.background = `hsl(${hue * 360}, 85%, 55%)`;
+  if (Math.abs(hue - selectedHue) < 0.001) sw.classList.add("active");
+  sw.addEventListener("click", () => {
+    selectedHue = hue;
+    localStorage.setItem("drunkr.skin", String(hue));
+    skinsEl.querySelectorAll(".skin").forEach((s) => s.classList.remove("active"));
+    sw.classList.add("active");
+  });
+  skinsEl.appendChild(sw);
+}
+loadoutSel.value = localStorage.getItem("drunkr.loadout") ?? "ak";
+loadoutSel.addEventListener("change", () =>
+  localStorage.setItem("drunkr.loadout", loadoutSel.value));
+
+function prefs() {
+  return { skin: selectedHue, weapon: loadoutSel.value };
+}
 
 const net = new Network();
 let game: Game | null = null;
@@ -79,7 +105,7 @@ function requestRooms() {
 // --- Actions ---------------------------------------------------------------
 function joinRoom(roomId?: string) {
   if (!net.connected || game) return;
-  net.send({ t: "join", name: callsign(), roomId });
+  net.send({ t: "join", name: callsign(), roomId, ...prefs() });
   status.textContent = "dropping in…";
 }
 
@@ -88,6 +114,7 @@ function createRoom() {
   net.send({
     t: "create",
     name: callsign(),
+    ...prefs(),
     config: {
       name: cfgName.value.trim(),
       mapId: cfgMap.value,

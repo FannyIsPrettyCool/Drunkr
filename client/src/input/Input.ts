@@ -11,8 +11,10 @@ export class Input {
   onShoot: (() => void) | null = null;
   onReload: (() => void) | null = null;
   onLockChange: ((locked: boolean) => void) | null = null;
-  /** Weapon switch request by id ("ak" / "sniper"). */
+  /** Weapon switch request by id. */
   onSwitch: ((weapon: string) => void) | null = null;
+  /** Dash ability key. */
+  onDash: (() => void) | null = null;
 
   private mouseDown = false;
   private rightDown = false;
@@ -23,6 +25,9 @@ export class Input {
       if (e.code === "KeyR") this.onReload?.();
       if (e.code === "Digit1") this.onSwitch?.("ak");
       if (e.code === "Digit2") this.onSwitch?.("sniper");
+      if (e.code === "Digit3") this.onSwitch?.("shotgun");
+      if (e.code === "KeyQ") this.onSwitch?.("katana");
+      if (e.code === "KeyF") this.onDash?.();
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
 

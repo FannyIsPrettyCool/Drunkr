@@ -1,4 +1,4 @@
-import { MOVE } from "./constants.js";
+import { MOVE, SLIDE } from "./constants.js";
 import type { CollisionWorld } from "./collision.js";
 import type { Vec3 } from "./math.js";
 
@@ -6,6 +6,12 @@ export interface MoveState {
   pos: Vec3;
   vel: Vec3;
   grounded: boolean;
+  /** Currently sliding (crouch-slide). */
+  sliding: boolean;
+  /** Remaining slide time (s). */
+  slideTime: number;
+  /** Jumps used since last grounded (for double-jump). */
+  jumpsUsed: number;
 }
 
 export interface MoveInput {
@@ -14,14 +20,29 @@ export interface MoveInput {
   wishZ: number;
   /** Target speed along the wish direction (0 = no input). */
   wishSpeed: number;
+  /** Jump held (auto-bhop on the ground). */
   jump: boolean;
+  /** Jump pressed this frame (used for the mid-air double jump). */
+  jumpEdge: boolean;
+  /** Crouch held. */
   crouch: boolean;
+  /** Crouch pressed this frame (initiates a slide). */
+  crouchEdge: boolean;
+  /** Movement speed multiplier (e.g. katana makes you faster). */
+  speedMul: number;
+  /** Total jumps allowed (1 normally, 2 with double-jump). */
+  maxJumps: number;
+  /** Whether this actor can slide. */
+  canSlide: boolean;
+}
+
+export function freshMoveState(pos: Vec3): MoveState {
+  return { pos, vel: { x: 0, y: 0, z: 0 }, grounded: false, sliding: false, slideTime: 0, jumpsUsed: 0 };
 }
 
 /**
- * One Quake/Source-style movement tick: friction + accelerate on the ground,
- * a capped air-strafe accelerate in the air, gravity, then collision. Shared
- * by the client's LocalPlayer and the server's bots so they move identically.
+ * One Quake/Source-style movement tick with slide + double-jump extensions.
+ * Shared by the client's LocalPlayer and the server's bots.
  */
 export function stepMovement(
   state: MoveState,
@@ -29,19 +50,56 @@ export function stepMovement(
   world: CollisionWorld,
   dt: number,
 ): { grounded: boolean; hitWall: boolean } {
-  // Bunny-hop: jumping the instant we land keeps momentum (skip friction).
+  const speed2 = () => Math.hypot(state.vel.x, state.vel.z);
+
+  if (state.grounded) state.jumpsUsed = 0;
+
+  // --- Slide state ---
+  const hs = speed2();
+  if (
+    input.canSlide && state.grounded && input.crouchEdge &&
+    !state.sliding && hs > SLIDE.minSpeed
+  ) {
+    state.sliding = true;
+    state.slideTime = SLIDE.duration;
+    const target = Math.max(hs, SLIDE.boost);
+    const s = target / (hs || 1);
+    state.vel.x *= s;
+    state.vel.z *= s;
+  }
+  if (state.sliding) {
+    state.slideTime -= dt;
+    if (!input.crouch || !state.grounded || hs < SLIDE.endSpeed || state.slideTime <= 0) {
+      state.sliding = false;
+    }
+  }
+
+  // --- Jump (ground bhop + mid-air double jump) ---
   let jumped = false;
   if (state.grounded && input.jump) {
     state.vel.y = MOVE.jumpVelocity;
     state.grounded = false;
+    state.jumpsUsed = 1;
+    state.sliding = false; // jump out of a slide, keeping horizontal momentum
     jumped = true;
+  } else if (!state.grounded && input.jumpEdge && state.jumpsUsed < input.maxJumps) {
+    state.vel.y = MOVE.jumpVelocity;
+    state.jumpsUsed++;
   }
 
+  const wishSpeed = input.wishSpeed * input.speedMul;
+
   if (state.grounded) {
-    if (!input.crouch) applyFriction(state.vel, dt);
-    accelerate(state.vel, input.wishX, input.wishZ, input.wishSpeed, MOVE.groundAccel, dt);
+    if (state.sliding) {
+      applyFriction(state.vel, dt, SLIDE.friction);
+      // Gentle steering so you can curve the slide.
+      accelerate(state.vel, input.wishX, input.wishZ, Math.min(wishSpeed, speed2()), SLIDE.steer, dt);
+    } else {
+      if (!input.crouch) applyFriction(state.vel, dt, MOVE.friction);
+      accelerate(state.vel, input.wishX, input.wishZ, wishSpeed, MOVE.groundAccel, dt);
+    }
   } else {
-    airAccelerate(state.vel, input.wishX, input.wishZ, input.wishSpeed, MOVE.airAccel, dt);
+    airAccelerate(state.vel, input.wishX, input.wishZ, wishSpeed, MOVE.airAccel, dt);
   }
 
   state.vel.y -= MOVE.gravity * dt;
@@ -51,7 +109,7 @@ export function stepMovement(
   return { grounded: state.grounded, hitWall: res.hitWall };
 }
 
-export function applyFriction(vel: Vec3, dt: number): void {
+export function applyFriction(vel: Vec3, dt: number, friction = MOVE.friction): void {
   const speed = Math.hypot(vel.x, vel.z);
   if (speed < 0.05) {
     vel.x = 0;
@@ -59,7 +117,7 @@ export function applyFriction(vel: Vec3, dt: number): void {
     return;
   }
   const control = Math.max(speed, MOVE.stopSpeed);
-  const drop = control * MOVE.friction * dt;
+  const drop = control * friction * dt;
   const scale = Math.max(0, speed - drop) / speed;
   vel.x *= scale;
   vel.z *= scale;

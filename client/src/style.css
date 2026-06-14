@@ -113,6 +113,52 @@ body {
   box-shadow: none;
 }
 
+/* Prefs (skin + loadout) */
+.prefs {
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.prefs-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.prefs-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.15rem;
+  opacity: 0.55;
+  width: 60px;
+  text-align: left;
+}
+#skins {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.skin {
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 2px;
+}
+.skin.active {
+  border-color: #fff;
+  box-shadow: 0 0 8px #fff8;
+}
+#cfg-loadout {
+  flex: 1;
+  padding: 0.4rem;
+  background: #05060c;
+  border: 1px solid var(--neon-cyan);
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+
 /* Lobby tabs */
 .lobby-tabs {
   display: flex;
@@ -274,6 +320,8 @@ body {
   width: 22px;
   height: 22px;
   transform: translate(-50%, -50%);
+  /* Always paint above the hitmarker so it's never covered. */
+  z-index: 3;
 }
 #crosshair span {
   position: absolute;
@@ -368,6 +416,24 @@ body {
 #ammo .sep { opacity: 0.4; margin: 0 0.2rem; }
 #ammo-max { font-size: 1.3rem; opacity: 0.6; }
 
+#dash {
+  position: absolute;
+  bottom: 5.4rem;
+  left: 3rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.2rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #ffffff22;
+  color: #777;
+  opacity: 0.6;
+}
+#dash.ready {
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 12px #18e0ff44;
+  opacity: 1;
+}
+
 #killfeed {
   position: absolute;
   top: 1.2rem;
@@ -390,6 +456,8 @@ body {
   height: 16px;
   transform: translate(-50%, -50%) rotate(45deg);
   opacity: 0;
+  z-index: 1;
+  pointer-events: none;
 }
 #hitmarker.show {
   opacity: 1;
@@ -432,6 +500,19 @@ body {
   font-size: 1rem;
   opacity: 0.6;
   letter-spacing: 0.15rem;
+}
+
+#banner {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-size: 2.2rem;
+  letter-spacing: 0.3rem;
+  color: #ffd33d;
+  text-shadow: 0 0 16px #ffd33d, 0 0 4px #000;
+  animation: hm 0.4s ease-out;
 }
 
 #scoreboard {

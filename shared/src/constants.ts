@@ -42,6 +42,35 @@ export const MOVE = {
   height: 1.8,
 };
 
+/** Crouch-slide tuning. A slide trades steering for preserved momentum. */
+export const SLIDE = {
+  /** Minimum ground speed (m/s) needed to start a slide. */
+  minSpeed: 7,
+  /** Speed the slide snaps you to on initiation (gives a small boost). */
+  boost: 13,
+  /** Slide ends once you decelerate below this. */
+  endSpeed: 4.5,
+  /** Very low friction while sliding (that's the point). */
+  friction: 2.2,
+  /** Gentle steering accel allowed mid-slide. */
+  steer: 5,
+  /** Max slide duration (s) before it auto-ends. */
+  duration: 1.4,
+};
+
+/** Dash ability tuning. */
+export const DASH = {
+  /** Horizontal burst speed (m/s). */
+  speed: 18,
+  cooldownMs: 4000,
+};
+
+/** Server match settings. */
+export const MATCH = {
+  /** Kills to win a round (FFA). */
+  killLimit: 30,
+};
+
 export const PLAYER = {
   maxHealth: 100,
   respawnDelayMs: 2000,
@@ -70,6 +99,18 @@ export interface WeaponDef {
   zoomFov?: number;
   /** Extra spread applied when firing a scoped weapon from the hip. */
   hipPenalty?: number;
+  /** Pellets fired per shot (shotgun). Each is an independent ray. */
+  pellets?: number;
+  /** Impulse (m/s) applied to the shooter opposite the aim dir (rocket-jump). */
+  selfKnockback?: number;
+  /** Melee weapon: short range, swing instead of hitscan tracer. */
+  melee?: boolean;
+  /** Movement speed multiplier while this weapon is equipped. */
+  speedMul?: number;
+  /** Grants an extra mid-air jump while equipped. */
+  doubleJump?: boolean;
+  /** Switch slot / hotkey hint. */
+  slot: number;
 }
 
 export const WEAPONS: Record<string, WeaponDef> = {
@@ -85,6 +126,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     spread: 0.013,
     headshotMul: 2.0,
     auto: true,
+    slot: 1,
   },
   // Lever-action scoped sniper: one shot, one kill.
   sniper: {
@@ -101,8 +143,46 @@ export const WEAPONS: Record<string, WeaponDef> = {
     scoped: true,
     zoomFov: 26,
     hipPenalty: 0.08,
+    slot: 2,
+  },
+  // Double-barrel shotgun: a wall of pellets up close, and the recoil throws
+  // you — aim at your feet to rocket-jump, or in front to dash back.
+  shotgun: {
+    id: "shotgun",
+    name: "DB-12",
+    damage: 17,
+    fireRate: 170,
+    magazine: 2,
+    reloadMs: 1500,
+    range: 34,
+    spread: 0.085,
+    headshotMul: 1.25,
+    auto: false,
+    pellets: 9,
+    selfKnockback: 11.5,
+    slot: 3,
+  },
+  // Neon katana: a melee one-shot that makes you faster and grants a double
+  // jump — a pure movement/assassination tool.
+  katana: {
+    id: "katana",
+    name: "NEON-EDGE",
+    damage: 200,
+    fireRate: 130,
+    magazine: 0,
+    reloadMs: 0,
+    range: 3.4,
+    spread: 0,
+    headshotMul: 1,
+    auto: false,
+    melee: true,
+    speedMul: 1.35,
+    doubleJump: true,
+    slot: 4,
   },
 };
 
 export const DEFAULT_WEAPON = "ak";
 export const WEAPON_IDS = Object.keys(WEAPONS);
+/** Weapons a player can carry/switch to (katana is always available via Q). */
+export const LOADOUT_WEAPONS = ["ak", "sniper", "shotgun"];

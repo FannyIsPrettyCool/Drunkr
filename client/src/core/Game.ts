@@ -3,6 +3,7 @@ import {
   CLIENT_SEND_RATE,
   MAPS,
   PLAYER,
+  WEAPONS,
   type PlayerState,
   type S_Welcome,
   type ServerMessage,
@@ -14,6 +15,7 @@ import { RemotePlayers } from "../entities/RemotePlayers.js";
 import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
 import { HUD } from "../ui/HUD.js";
+import { Sfx } from "../audio/Sfx.js";
 import type { Network } from "../net/Network.js";
 
 export class Game {
@@ -24,6 +26,7 @@ export class Game {
   private weapon: Weapon;
   private input: Input;
   private hud: HUD;
+  private sfx = new Sfx();
 
   private localId: number;
   private roster = new Map<number, PlayerState>();
@@ -60,20 +63,33 @@ export class Game {
       {
         onAmmo: (cur, max) => this.hud.setAmmo(cur, max),
         onHit: (head) => this.hud.hitmark(head),
-        onReloadState: (active, progress) => this.hud.setReload(active, progress),
+        onReloadState: (active, progress) => {
+          this.hud.setReload(active, progress);
+          if (active && progress < 0.05) this.sfx.reload();
+        },
         onWeapon: (name) => this.hud.setWeapon(name),
         onScope: (active) => this.hud.setScope(active),
+        onShoot: (id) => this.sfx.shoot(id),
       },
     );
 
     this.input.onReload = () => this.weapon.reload();
     this.input.onSwitch = (id) => this.switchWeapon(id);
+    this.input.onDash = () => {
+      if (this.local.tryDash()) this.sfx.dash();
+    };
+    this.input.onLockChange = (locked) => {
+      if (locked) this.sfx.resume();
+    };
 
     // Seed roster and spawn from the welcome payload.
     for (const p of welcome.players) {
       this.roster.set(p.id, p);
       if (p.id === this.localId) {
         this.local.spawn(p.pos.x, p.pos.y, p.pos.z);
+        // Match the loadout the server assigned us (no need to re-send it).
+        this.weapon.switchTo(p.weapon);
+        this.applyWeaponMods(p.weapon);
       } else {
         this.remotes.add(p);
       }
@@ -118,18 +134,30 @@ export class Game {
         const killer = this.roster.get(msg.killer)?.name ?? "?";
         const victim = this.roster.get(msg.victim)?.name ?? "?";
         this.hud.addKill(killer, victim, msg.head);
+        if (msg.killer === this.localId) this.sfx.kill();
         if (msg.victim === this.localId) {
           this.local.dead = true;
           this.hud.setDead(true);
+          this.sfx.death();
         }
         break;
       }
       case "shot": {
         const o = new THREE.Vector3(msg.origin.x, msg.origin.y, msg.origin.z);
-        const d = new THREE.Vector3(msg.dir.x, msg.dir.y, msg.dir.z);
-        this.weapon.remoteShot(o, d);
+        if (!msg.melee) {
+          for (const dir of msg.dirs) {
+            this.weapon.remoteShot(o, new THREE.Vector3(dir.x, dir.y, dir.z));
+          }
+        }
+        // Positional-ish volume by distance to the shooter.
+        const sp = this.remotes.position(msg.from);
+        const dist = sp ? sp.distanceTo(this.local.pos) : 999;
+        if (dist < 60) this.sfx.remoteShoot(msg.weapon);
         break;
       }
+      case "matchend":
+        this.hud.banner(`${msg.name} WINS · new round`);
+        break;
       case "respawned":
         if (msg.id === this.localId) {
           this.local.spawn(msg.pos.x, msg.pos.y, msg.pos.z);
@@ -147,7 +175,16 @@ export class Game {
       this.net.send({ t: "weapon", weapon: id });
       const me = this.roster.get(this.localId);
       if (me) me.weapon = id;
+      this.applyWeaponMods(id);
+      this.sfx.switchWeapon();
     }
+  }
+
+  /** Movement modifiers granted by the equipped weapon (katana = fast + double-jump). */
+  private applyWeaponMods(id: string) {
+    const def = WEAPONS[id];
+    this.local.speedMul = def?.speedMul ?? 1;
+    this.local.maxJumps = def?.doubleJump ? 2 : 1;
   }
 
   /** Apply server-authoritative fields to the local player. */
@@ -172,9 +209,13 @@ export class Game {
       this.local.look(m.dx, m.dy);
     }
 
-    this.local.update(this.input, dt);
+    const mv = this.local.update(this.input, dt);
+    if (mv.jumped) this.sfx.jump();
+    if (mv.landed) this.sfx.land();
+    if (mv.slideStarted) this.sfx.slide();
     this.weapon.update(dt, this.input.firing && this.input.locked, this.input.ads);
-    this.remotes.update();
+    this.remotes.update(dt);
+    this.hud.setDash(this.local.dashCooldown <= 0);
 
     // Send local state to the server at a fixed rate.
     this.sendAccum += dt;

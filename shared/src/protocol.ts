@@ -47,15 +47,23 @@ export interface RoomInfo {
   difficulty: BotDifficulty;
 }
 
+/** Cosmetic + loadout choices sent when entering a match. */
+export interface PlayerPrefs {
+  /** Skin hue 0..1. */
+  skin?: number;
+  /** Starting weapon id. */
+  weapon?: string;
+}
+
 /** Join an existing room (or quick-play when roomId omitted). */
-export interface C_Join {
+export interface C_Join extends PlayerPrefs {
   t: "join";
   name: string;
   roomId?: string;
 }
 
 /** Create a new room and join it. */
-export interface C_Create {
+export interface C_Create extends PlayerPrefs {
   t: "create";
   name: string;
   config: RoomConfig;
@@ -74,16 +82,15 @@ export interface C_State {
   pitch: number;
 }
 
-/** Client-side hitscan result. The server validates and applies damage. */
+/** A trigger pull. The server re-runs each ray and applies damage. */
 export interface C_Shoot {
   t: "shoot";
-  /** Muzzle origin and normalized direction, for server-side validation. */
+  /** Muzzle origin for server-side validation. */
   origin: Vec3;
-  dir: Vec3;
-  /** Target the client believes it hit, if any. */
-  target?: number;
-  /** Was it a headshot (per client). */
-  head?: boolean;
+  /** One normalized ray per pellet (1 for most guns, many for the shotgun). */
+  dirs: Vec3[];
+  /** Melee swing (short range, no bullet tracer on remotes). */
+  melee?: boolean;
 }
 
 export interface C_Respawn {
@@ -163,7 +170,10 @@ export interface S_Shot {
   t: "shot";
   from: number;
   origin: Vec3;
-  dir: Vec3;
+  dirs: Vec3[];
+  melee?: boolean;
+  /** Weapon id, so others play the right sound. */
+  weapon: string;
 }
 
 export interface S_Respawn {
@@ -171,6 +181,13 @@ export interface S_Respawn {
   id: number;
   pos: Vec3;
   health: number;
+}
+
+/** A player hit the kill limit; scores reset and play continues. */
+export interface S_MatchEnd {
+  t: "matchend";
+  winner: number;
+  name: string;
 }
 
 export type ServerMessage =
@@ -182,7 +199,8 @@ export type ServerMessage =
   | S_Damage
   | S_Kill
   | S_Shot
-  | S_Respawn;
+  | S_Respawn
+  | S_MatchEnd;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);

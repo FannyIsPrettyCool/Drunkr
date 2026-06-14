@@ -16,6 +16,9 @@ export class HUD {
   private weaponName = document.getElementById("weapon-name")!;
   private scope = document.getElementById("scope")!;
   private crosshair = document.getElementById("crosshair")!;
+  private dash = document.getElementById("dash")!;
+  private bannerEl = document.getElementById("banner")!;
+  private bannerTimer = 0;
 
   show() {
     this.root.classList.remove("hidden");
@@ -26,8 +29,25 @@ export class HUD {
   }
 
   setAmmo(cur: number, max: number) {
-    this.ammoCur.textContent = String(cur);
-    this.ammoMax.textContent = String(max);
+    if (max <= 0) {
+      // Melee / no-magazine weapon.
+      this.ammoCur.textContent = "∞";
+      this.ammoMax.textContent = "";
+    } else {
+      this.ammoCur.textContent = String(cur);
+      this.ammoMax.textContent = String(max);
+    }
+  }
+
+  setDash(ready: boolean) {
+    this.dash.classList.toggle("ready", ready);
+  }
+
+  banner(text: string) {
+    this.bannerEl.textContent = text;
+    this.bannerEl.classList.remove("hidden");
+    clearTimeout(this.bannerTimer);
+    this.bannerTimer = window.setTimeout(() => this.bannerEl.classList.add("hidden"), 4000);
   }
 
   hitmark(head: boolean) {
