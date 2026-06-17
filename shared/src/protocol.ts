@@ -23,6 +23,8 @@ export interface PlayerState {
   cls: string;
   /** Invisible (Illusionist cloak) — remote clients hide the avatar. */
   invis: boolean;
+  /** Posture for remote animation: 0 = standing, 1 = crouching, 2 = sliding. */
+  posture?: number;
 }
 
 /** A live grenade, sent in snapshots so clients can render it. */
@@ -47,6 +49,8 @@ export interface RoomConfig {
   difficulty: BotDifficulty;
   /** An editor-exported map to host instead of a built-in (validated server-side). */
   customMap?: GameMap;
+  /** Game mode — defaults to "ffa". */
+  mode?: "ffa" | "bomb";
 }
 
 /** Summary of a room shown in the server browser. */
@@ -96,6 +100,8 @@ export interface C_State {
   pos: Vec3;
   yaw: number;
   pitch: number;
+  /** Posture: 0 = standing, 1 = crouching, 2 = sliding. */
+  posture?: number;
 }
 
 /** A trigger pull. The server re-runs each ray and applies damage. */
@@ -107,6 +113,12 @@ export interface C_Shoot {
   dirs: Vec3[];
   /** Melee swing (short range, no bullet tracer on remotes). */
   melee?: boolean;
+  /**
+   * Server-clock time (ms) the client rendered the world it shot at. The server
+   * rewinds targets to this instant (lag compensation) so hits land where the
+   * shooter saw them, not where the target has since moved.
+   */
+  clientTime?: number;
 }
 
 export interface C_Respawn {
@@ -138,6 +150,12 @@ export interface C_VoteMap {
   mapId: string;
 }
 
+/** Hold or release the use key (E) for bomb planting / defusing. */
+export interface C_Use {
+  t: "use";
+  held: boolean;
+}
+
 export type ClientMessage =
   | C_Join
   | C_Create
@@ -148,7 +166,8 @@ export type ClientMessage =
   | C_Fell
   | C_SwitchWeapon
   | C_Ability
-  | C_VoteMap;
+  | C_VoteMap
+  | C_Use;
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -207,6 +226,10 @@ export interface S_Kill {
   killer: number;
   victim: number;
   head: boolean;
+  /** Muzzle position of the lethal shot (for the victim's death-cam tracer). */
+  from?: Vec3;
+  /** Impact point of the lethal shot. */
+  at?: Vec3;
 }
 
 /** Broadcast a fired shot so other clients can render tracers / sound. */
@@ -271,6 +294,36 @@ export interface S_MatchRestart {
   players: PlayerState[];
 }
 
+/** Bomb defusal: sent at the start of each round to assign teams and spawn positions. */
+export interface S_BombRoundStart {
+  t: "bombstart";
+  teams: { id: number; team: "T" | "CT" }[];
+  roundNum: number;
+  scoreT: number;
+  scoreCT: number;
+  roundEndsAt: number;
+  /** Full player list with updated spawn positions. */
+  players: PlayerState[];
+}
+
+/** Bomb defusal: a significant bomb event (plant, defuse, explosion, etc.). */
+export interface S_BombEvent {
+  t: "bombevent";
+  event: "planting" | "plant_cancel" | "planted" | "defusing" | "defuse_cancel" | "defused" | "exploded";
+  pos?: Vec3;
+  detonatesAt?: number;
+  actorId?: number;
+}
+
+/** Bomb defusal: the round has ended. */
+export interface S_BombRoundEnd {
+  t: "bombroundend";
+  winner: "T" | "CT";
+  reason: "bomb_exploded" | "bomb_defused" | "t_eliminated" | "ct_eliminated" | "time";
+  scoreT: number;
+  scoreCT: number;
+}
+
 export type ServerMessage =
   | S_Welcome
   | S_RoomList
@@ -285,7 +338,10 @@ export type ServerMessage =
   | S_VoteUpdate
   | S_MatchRestart
   | S_ForceWeapon
-  | S_Explosion;
+  | S_Explosion
+  | S_BombRoundStart
+  | S_BombEvent
+  | S_BombRoundEnd;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);

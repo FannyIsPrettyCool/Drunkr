@@ -4,6 +4,9 @@ import type { LocalPlayer } from "../entities/LocalPlayer.js";
 import type { RemotePlayers } from "../entities/RemotePlayers.js";
 import type { Network } from "../net/Network.js";
 
+/** Equip time (s) — you can't fire for a moment after switching weapons. */
+const SWITCH_DELAY = 0.25;
+
 interface Tracer {
   line: THREE.Line;
   life: number;
@@ -50,6 +53,8 @@ export class Weapon {
   private reloadDip = 0;
   /** Melee swing progress (1 = just swung, decays to 0). */
   private swing = 0;
+  /** Equip (pullout) animation time remaining (s). */
+  private equipT = 0;
   /** Weapon-bob phase, advanced by player movement. */
   private bobTime = 0;
 
@@ -100,7 +105,9 @@ export class Weapon {
     this.ammo = this.ammoByWeapon[id] ?? def.magazine;
     this.reloading = false;
     this.reloadTimer = 0;
-    this.cooldown = 0;
+    // Brief equip delay before the new weapon can fire, with a pullout anim.
+    this.cooldown = SWITCH_DELAY;
+    this.equipT = SWITCH_DELAY;
     this.wasFiring = false;
     this.buildViewmodel();
     this.cb.onAmmo(this.ammo, def.magazine);
@@ -129,8 +136,23 @@ export class Weapon {
       color: 0xff2d9b, emissive: 0xff2d9b, emissiveIntensity: 0.8,
     });
 
+    // Shared materials for the polished gun models.
+    const metal = new THREE.MeshStandardMaterial({
+      color: 0x14161d, emissive: 0x0a1a24, emissiveIntensity: 0.3, metalness: 0.8, roughness: 0.33,
+    });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x39414f, metalness: 0.85, roughness: 0.28 });
+    const glow = new THREE.MeshStandardMaterial({ color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.6 });
+
     const add = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
       const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+      me.position.set(x, y, z);
+      g.add(me);
+      return me;
+    };
+    // A cylinder aligned down the barrel (-z) by default.
+    const cyl = (r: number, len: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
+      const me = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 14), m);
+      me.rotation.x = Math.PI / 2;
       me.position.set(x, y, z);
       g.add(me);
       return me;
@@ -139,44 +161,96 @@ export class Weapon {
     let muzzleZ = -0.9;
     switch (this.def.id) {
       case "sniper": {
-        add(0.1, 0.13, 0.9, bodyMat, 0, 0, -0.45);
-        add(0.05, 0.05, 0.8, bodyMat, 0, 0.02, -1.0);
-        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.28, 8), accentMat);
-        scope.rotation.x = Math.PI / 2;
-        scope.position.set(0, 0.11, -0.45);
-        g.add(scope);
-        add(0.09, 0.18, 0.12, bodyMat, 0, -0.13, -0.1).rotation.x = 0.3;
-        muzzleZ = -1.4;
+        // Long-range marksman rifle: long fluted barrel, big scope, skeleton stock.
+        add(0.075, 0.11, 0.5, metal, 0, 0, -0.4);          // receiver
+        add(0.07, 0.035, 0.46, steel, 0, 0.075, -0.4);     // top rail
+        cyl(0.022, 0.98, metal, 0, 0.0, -1.0);             // long barrel
+        add(0.06, 0.06, 0.13, steel, 0, 0, -1.52);         // muzzle brake
+        add(0.072, 0.02, 0.1, accentMat, 0, 0.05, -1.52);  // brake accent
+        // Scope: tube on twin mounts, glowing objective + rear lens.
+        cyl(0.045, 0.46, metal, 0, 0.135, -0.5);
+        cyl(0.05, 0.04, glow, 0, 0.135, -0.735);           // front lens
+        cyl(0.047, 0.03, accentMat, 0, 0.135, -0.27);      // rear lens
+        add(0.03, 0.085, 0.04, metal, 0, 0.07, -0.62);     // front mount
+        add(0.03, 0.085, 0.04, metal, 0, 0.07, -0.38);     // rear mount
+        add(0.03, 0.03, 0.11, steel, 0.06, 0.0, -0.18);    // bolt handle
+        add(0.05, 0.12, 0.09, metal, 0, -0.13, -0.2);      // magazine
+        add(0.085, 0.06, 0.12, metal, 0, -0.1, -0.12);     // trigger guard
+        add(0.05, 0.15, 0.07, metal, 0, -0.12, 0.0).rotation.x = 0.5; // grip
+        add(0.05, 0.07, 0.28, metal, 0, -0.02, 0.0);       // stock
+        add(0.05, 0.13, 0.05, steel, 0, -0.05, 0.13);      // butt pad
+        muzzleZ = -1.6;
         break;
       }
       case "shotgun": {
-        // Double-barrel — two stacked tubes + a wide stock.
-        add(0.16, 0.1, 0.7, bodyMat, 0, 0.04, -0.4);
-        add(0.06, 0.06, 0.66, bodyMat, -0.045, -0.02, -0.5);
-        add(0.06, 0.06, 0.66, bodyMat, 0.045, -0.02, -0.5);
-        add(0.14, 0.03, 0.24, accentMat, 0, 0.1, -0.25);
-        add(0.1, 0.16, 0.14, bodyMat, 0, -0.13, -0.02).rotation.x = 0.3;
-        muzzleZ = -0.85;
+        // Futuristic break-action double-barrel: over/under barrels, neon rib.
+        add(0.13, 0.13, 0.34, metal, 0, 0, -0.22);          // receiver block
+        add(0.13, 0.04, 0.32, steel, 0, 0.085, -0.22);      // top plate
+        cyl(0.042, 0.74, steel, 0, 0.048, -0.66);           // upper barrel
+        cyl(0.042, 0.74, steel, 0, -0.048, -0.66);          // lower barrel
+        add(0.022, 0.13, 0.62, metal, 0, 0.0, -0.62);       // rib between barrels
+        add(0.11, 0.018, 0.5, accentMat, 0, 0.0, -0.64);    // neon rib strip
+        add(0.075, 0.075, 0.06, steel, 0, 0.048, -1.02);    // upper muzzle
+        add(0.075, 0.075, 0.06, steel, 0, -0.048, -1.02);   // lower muzzle
+        cyl(0.024, 0.04, glow, 0, 0.048, -1.04);            // glowing core
+        cyl(0.024, 0.04, glow, 0, -0.048, -1.04);
+        add(0.12, 0.06, 0.07, accentMat, 0, -0.05, -0.03);  // break hinge
+        add(0.12, 0.07, 0.22, metal, 0, -0.06, -0.5);       // forend
+        add(0.055, 0.16, 0.08, metal, 0, -0.12, 0.06).rotation.x = 0.4; // grip
+        add(0.07, 0.11, 0.26, metal, 0, -0.01, 0.0);        // angular stock
+        add(0.07, 0.14, 0.05, accentMat, 0, -0.03, 0.12);   // butt accent
+        muzzleZ = -1.08;
         break;
       }
       case "katana": {
-        // A long glowing blade + guard + grip, angled like a held sword.
-        const bladeMat = new THREE.MeshStandardMaterial({
-          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.6,
+        // A proper neon katana: flat steel blade with a glowing cutting edge,
+        // a guard (tsuba), a wrapped handle (tsuka) and an angled tip (kissaki).
+        const steel = new THREE.MeshStandardMaterial({
+          color: 0xbfe6ff, emissive: 0x0c3b58, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
         });
-        add(0.03, 0.06, 1.1, bladeMat, 0, 0.02, -0.7);
-        add(0.16, 0.04, 0.06, accentMat, 0, 0, -0.16); // guard
-        add(0.05, 0.05, 0.22, bodyMat, 0, -0.04, -0.02); // grip
-        muzzleZ = -1.3;
+        const edgeMat = new THREE.MeshStandardMaterial({
+          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.9,
+        });
+        const wrap = new THREE.MeshStandardMaterial({ color: 0x12111a, roughness: 0.85 });
+
+        // Handle + pommel + wrap ridges.
+        add(0.05, 0.05, 0.30, wrap, 0, -0.02, 0.06);
+        add(0.066, 0.066, 0.04, accentMat, 0, -0.02, 0.21);
+        add(0.064, 0.064, 0.02, accentMat, 0, -0.02, 0.12);
+        add(0.064, 0.064, 0.02, accentMat, 0, -0.02, 0.02);
+        // Guard.
+        add(0.17, 0.14, 0.03, accentMat, 0, -0.01, -0.12);
+        // Blade + glowing edge, angled slightly up.
+        add(0.022, 0.10, 1.25, steel, 0, 0.02, -0.78).rotation.x = 0.04;
+        add(0.028, 0.03, 1.25, edgeMat, 0, -0.035, -0.78).rotation.x = 0.04;
+        // Angled tip.
+        add(0.022, 0.085, 0.18, steel, 0, 0.10, -1.46).rotation.x = 0.3;
+        muzzleZ = -1.5;
         break;
       }
       default: {
-        // Compact full-auto rifle (AK).
-        add(0.12, 0.16, 0.7, bodyMat, 0, 0, -0.35);
-        add(0.06, 0.06, 0.5, bodyMat, 0, 0.02, -0.75);
-        add(0.13, 0.03, 0.3, accentMat, 0, 0.09, -0.3);
-        add(0.08, 0.22, 0.1, bodyMat, 0, -0.18, -0.2);
-        add(0.1, 0.18, 0.12, bodyMat, 0, -0.14, -0.05).rotation.x = 0.3;
+        // AK-pattern rifle: gunmetal receiver + barrel, amber furniture, banana mag.
+        const wood = new THREE.MeshStandardMaterial({
+          color: 0x6a3d1c, emissive: 0x180b04, emissiveIntensity: 0.25, metalness: 0.1, roughness: 0.75,
+        });
+        add(0.085, 0.12, 0.44, metal, 0, 0, -0.30);         // receiver
+        add(0.08, 0.035, 0.40, steel, 0, 0.08, -0.30);      // dust cover
+        add(0.05, 0.045, 0.05, metal, 0, 0.085, -0.14);     // rear sight block
+        add(0.085, 0.085, 0.24, wood, 0, -0.01, -0.60);     // lower handguard
+        add(0.055, 0.05, 0.22, wood, 0, 0.065, -0.58);      // upper handguard
+        cyl(0.013, 0.30, metal, 0, 0.085, -0.62);           // gas tube
+        cyl(0.02, 0.52, metal, 0, 0.015, -0.95);            // barrel
+        add(0.03, 0.075, 0.04, metal, 0, 0.085, -1.06);     // front sight post
+        add(0.05, 0.05, 0.10, steel, 0, 0.015, -1.22);      // slant muzzle brake
+        // Banana magazine — three segments curving forward-down.
+        add(0.06, 0.11, 0.12, metal, 0, -0.12, -0.15).rotation.x = 0.2;
+        add(0.058, 0.12, 0.11, metal, 0, -0.24, -0.19).rotation.x = 0.5;
+        add(0.052, 0.10, 0.10, metal, 0, -0.35, -0.25).rotation.x = 0.85;
+        add(0.055, 0.16, 0.075, metal, 0, -0.13, 0.04).rotation.x = 0.45; // pistol grip
+        add(0.05, 0.085, 0.24, wood, 0, -0.01, 0.02);       // stock
+        add(0.05, 0.13, 0.05, wood, 0, -0.03, 0.13);        // butt pad
+        add(0.088, 0.016, 0.30, accentMat, 0, 0.03, -0.30); // neon accent
+        muzzleZ = -1.25;
       }
     }
 
@@ -260,7 +334,8 @@ export class Weapon {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    this.viewmodel.visible = this.zoom < 0.5;
+    // Hide the viewmodel while scoped in, and entirely while dead (it reappears on respawn).
+    this.viewmodel.visible = this.zoom < 0.5 && !this.local.dead;
     this.cb.onScope(this.zoom > 0.6);
 
     this.updateEffects(dt);
@@ -331,6 +406,8 @@ export class Weapon {
       origin: { x: origin.x, y: origin.y, z: origin.z },
       dirs,
       melee: this.def.melee,
+      // The instant (server clock) the targets were rendered at, for lag comp.
+      clientTime: this.remotes.renderTimeServer(),
     });
   }
 
@@ -430,15 +507,32 @@ export class Weapon {
     const bobX = Math.cos(this.bobTime) * 0.018 * moving + Math.sin(performance.now() * 0.001) * 0.004;
     const bobY = Math.abs(Math.sin(this.bobTime)) * 0.02 * moving;
 
+    // Pullout / equip animation: regular rise for guns, a spin for melee + shotgun.
+    this.equipT = Math.max(0, this.equipT - dt);
+    const e = SWITCH_DELAY > 0 ? this.equipT / SWITCH_DELAY : 0;
+    const spinEquip = this.def.melee || this.def.id === "shotgun";
+    let eqX = 0, eqY = 0, eqZ = 0, eqRX = 0, eqRZ = 0;
+    if (e > 0) {
+      if (spinEquip) {
+        eqRZ = e * Math.PI * 2;  // a full spin that unwinds into place
+        eqY = -0.22 * e;
+        eqX = 0.06 * e;
+      } else {
+        eqY = -0.36 * e;         // rises up from below
+        eqZ = 0.08 * e;
+        eqRX = 0.8 * e;          // tilts level as it comes up
+      }
+    }
+
     this.viewmodel.position.set(
-      0.22 + this.reloadDip * 0.04 - slash * 0.18 + bobX,
-      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24 + slash * 0.1 - bobY,
-      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05 - slash * 0.25,
+      0.22 + this.reloadDip * 0.04 - slash * 0.18 + bobX + eqX,
+      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24 + slash * 0.1 - bobY + eqY,
+      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05 - slash * 0.25 + eqZ,
     );
     this.viewmodel.rotation.set(
-      this.reloadDip * 0.6 + work - slash * 1.5,
+      this.reloadDip * 0.6 + work - slash * 1.5 + eqRX,
       this.reloadDip * 0.35 + slash * 0.4,
-      slash * 1.3,
+      slash * 1.3 + eqRZ,
     );
   }
 

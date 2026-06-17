@@ -41,6 +41,16 @@
       <div id="blind"></div>
       <div id="damage-flash"></div>
       <div id="respawn" class="hidden">ELIMINATED<br /><small>respawning…</small></div>
+      <div id="bomb-hud" class="hidden">
+        <div id="bomb-team"></div>
+        <div id="bomb-score"></div>
+        <div id="bomb-timer" class="hidden"></div>
+        <div id="bomb-prompt" class="hidden"></div>
+      </div>
+      <div id="bomb-round-end" class="hidden">
+        <div id="bomb-round-result"></div>
+        <div id="bomb-round-score"></div>
+      </div>
       <div id="banner" class="hidden"></div>
       <div id="intermission" class="hidden">
         <div class="io-title">ROUND OVER</div>
@@ -149,7 +159,13 @@
         </div>
 
         <div id="tab-create" class="tab-panel hidden">
-          <label class="field">MAP
+          <label class="field">MODE
+            <select id="cfg-mode">
+              <option value="ffa">Free For All</option>
+              <option value="bomb">Bomb Defusal (Dust II)</option>
+            </select>
+          </label>
+          <label class="field" id="cfg-map-row">MAP
             <select id="cfg-map">
               <option value="neon_yard">Neon Yard</option>
               <option value="overdrive">Overdrive</option>
@@ -159,7 +175,7 @@
               <option value="skyhaven">Skyhaven (vertical)</option>
             </select>
           </label>
-          <label class="field">CUSTOM MAP (from editor)
+          <label class="field" id="cfg-custom-row">CUSTOM MAP (from editor)
             <input id="cfg-custom-file" type="file" accept="application/json" />
           </label>
           <div id="cfg-custom-name" class="hint"></div>
@@ -170,8 +186,8 @@
               <option value="hard">Hard</option>
             </select>
           </label>
-          <label class="check"><input type="checkbox" id="cfg-bots" checked /> Enable bots</label>
-          <label class="field">BOTS <span id="cfg-botcount-val">4</span>
+          <label class="check" id="cfg-bots-row"><input type="checkbox" id="cfg-bots" checked /> Enable bots</label>
+          <label class="field" id="cfg-botcount-row">BOTS <span id="cfg-botcount-val">4</span>
             <input type="range" id="cfg-botcount" min="0" max="10" value="4" />
           </label>
           <input id="cfg-name" maxlength="24" placeholder="server name (optional)" autocomplete="off" />

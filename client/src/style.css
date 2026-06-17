@@ -404,17 +404,17 @@ body {
   pointer-events: none;
   background: radial-gradient(
     circle at 50% 50%,
-    transparent 0 26vh,
-    rgba(0, 0, 0, 0.6) 26vh 27vh,
-    #02030a 27vh
+    transparent 0 38vh,
+    rgba(0, 0, 0, 0.6) 38vh 39.5vh,
+    #02030a 39.5vh
   );
 }
 .scope-ring {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 52vh;
-  height: 52vh;
+  width: 76vh;
+  height: 76vh;
   transform: translate(-50%, -50%);
   border: 2px solid #18e0ff66;
   border-radius: 50%;
@@ -824,3 +824,90 @@ body {
   min-width: 1.4em;
   text-align: right;
 }
+
+/* ---- Bomb defusal HUD --------------------------------------------------- */
+
+#bomb-hud {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 20;
+}
+
+#bomb-team {
+  font-size: 0.75rem;
+  letter-spacing: 0.22rem;
+  font-weight: bold;
+}
+#bomb-team.t-side  { color: #ff8c42; text-shadow: 0 0 14px #ff8c4299; }
+#bomb-team.ct-side { color: var(--neon-cyan); text-shadow: 0 0 14px #18e0ff88; }
+
+#bomb-score {
+  font-size: 1.4rem;
+  letter-spacing: 0.08rem;
+  color: var(--fg);
+}
+
+#bomb-timer {
+  font-size: 1.7rem;
+  font-weight: bold;
+  letter-spacing: 0.04rem;
+  color: #ff4444;
+  text-shadow: 0 0 18px #ff444488;
+  animation: bomb-pulse 0.5s ease-in-out infinite alternate;
+}
+@keyframes bomb-pulse { from { opacity: 0.9; } to { opacity: 1; text-shadow: 0 0 30px #ff444499; } }
+
+#bomb-prompt {
+  position: absolute;
+  top: 56vh;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.78rem;
+  letter-spacing: 0.2rem;
+  color: var(--fg);
+  background: #00000066;
+  padding: 4px 12px;
+  border: 1px solid #ffffff22;
+}
+
+#bomb-round-end {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 25;
+  text-align: center;
+}
+
+#bomb-round-result {
+  font-size: 1.8rem;
+  letter-spacing: 0.18rem;
+  font-weight: bold;
+}
+#bomb-round-result.t-win  { color: #ff8c42; text-shadow: 0 0 24px #ff8c4299; }
+#bomb-round-result.ct-win { color: var(--neon-cyan); text-shadow: 0 0 24px #18e0ff88; }
+
+#bomb-round-score {
+  font-size: 1.0rem;
+  letter-spacing: 0.1rem;
+  opacity: 0.75;
+}
+
+/* Mode selector hides map/bots rows in bomb mode */
+#cfg-map-row.hidden,
+#cfg-custom-row.hidden,
+#cfg-bots-row.hidden,
+#cfg-botcount-row.hidden { display: none; }
+

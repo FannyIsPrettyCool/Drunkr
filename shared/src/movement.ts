@@ -49,23 +49,28 @@ export function stepMovement(
   input: MoveInput,
   world: CollisionWorld,
   dt: number,
-): { grounded: boolean; hitWall: boolean } {
+): { grounded: boolean; hitWall: boolean; padLaunched: boolean } {
   const speed2 = () => Math.hypot(state.vel.x, state.vel.z);
+  const wasGrounded = state.grounded;
 
   if (state.grounded) state.jumpsUsed = 0;
 
-  // --- Slide state ---
-  const hs = speed2();
-  if (
-    input.canSlide && state.grounded && input.crouchEdge &&
-    !state.sliding && hs > SLIDE.minSpeed
-  ) {
+  // Begin a slide, keeping (or boosting to) the current horizontal momentum.
+  const startSlide = () => {
     state.sliding = true;
     state.slideTime = SLIDE.duration;
-    const target = Math.max(hs, SLIDE.boost);
-    const s = target / (hs || 1);
+    const cur = speed2();
+    const target = Math.max(cur, SLIDE.boost);
+    const s = target / (cur || 1);
     state.vel.x *= s;
     state.vel.z *= s;
+  };
+
+  // --- Slide state ---
+  const hs = speed2();
+  // Crouch tapped while running on the ground → slide.
+  if (input.canSlide && state.grounded && input.crouchEdge && !state.sliding && hs > SLIDE.minSpeed) {
+    startSlide();
   }
   if (state.sliding) {
     state.slideTime -= dt;
@@ -87,13 +92,17 @@ export function stepMovement(
     state.jumpsUsed++;
   }
 
-  const wishSpeed = input.wishSpeed * input.speedMul;
+  let wishSpeed = input.wishSpeed * input.speedMul;
+  // Crouch-walking (not sliding) is slower than standing.
+  if (input.crouch && !state.sliding) wishSpeed *= MOVE.crouchSpeedMul;
 
   if (state.grounded) {
     if (state.sliding) {
       applyFriction(state.vel, dt, SLIDE.friction);
     } else {
-      if (!input.crouch) applyFriction(state.vel, dt, MOVE.friction);
+      // Always apply ground friction so crouch-walking decelerates to its
+      // (lower) target speed instead of coasting at run speed.
+      applyFriction(state.vel, dt, MOVE.friction);
       accelerate(state.vel, input.wishX, input.wishZ, wishSpeed, MOVE.groundAccel, dt);
     }
   } else {
@@ -115,7 +124,17 @@ export function stepMovement(
     }
   }
 
+  // Landing while holding crouch with speed → slide on touchdown (bhop→slide),
+  // preserving the momentum you carried in instead of bleeding it to friction.
+  if (
+    input.canSlide && !state.sliding && state.grounded && !wasGrounded &&
+    input.crouch && speed2() > SLIDE.minSpeed
+  ) {
+    startSlide();
+  }
+
   // Jump pads: stepping on one launches you (overrides velocity).
+  let padLaunched = false;
   if (state.grounded) {
     const launch = world.padLaunch(state.pos);
     if (launch) {
@@ -124,10 +143,11 @@ export function stepMovement(
       state.vel.z = launch.z;
       state.grounded = false;
       state.sliding = false;
+      padLaunched = true;
     }
   }
 
-  return { grounded: state.grounded, hitWall: res.hitWall };
+  return { grounded: state.grounded, hitWall: res.hitWall, padLaunched };
 }
 
 export function applyFriction(vel: Vec3, dt: number, friction = MOVE.friction): void {

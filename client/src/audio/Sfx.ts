@@ -14,10 +14,10 @@ export class Sfx {
 
   constructor() {
     const files = [
-      'AK.wav', 'blink.wav', 'bullet_impact.wav', 'cloak.wav', 'confuse.wav',
+      'AK.wav', 'beep.wav', 'blink.wav', 'bullet_impact.wav', 'cloak.wav', 'confuse.wav',
       'dash.wav', 'death.wav', 'flash.wav', 'footstep.wav', 'fortify.wav',
       'frag_grenade.wav', 'headshot.wav', 'hit.wav', 'jump.wav', 'kill.wav',
-      'land_slide.wav', 'melee.wav', 'menu_click.wav', 'reload.wav',
+      'land_slide.wav', 'melee.wav', 'menu_click.wav', 'pad.wav', 'planted.wav', 'reload.wav',
       'reload_sniper.wav', 'shockwave.wav', 'shotgun.wav', 'sniper.wav',
       'updraft.wav',
     ];
@@ -161,6 +161,7 @@ export class Sfx {
 
   // ---- Ability sounds ------------------------------------------------
 
+  pad()          { this.play('pad.wav', 1.0); }
   blink()        { this.play('blink.wav', 0.8); }
   cloak()        { this.play('cloak.wav', 0.8); }
   confuse()      { this.play('confuse.wav', 0.8); }
@@ -169,6 +170,13 @@ export class Sfx {
   updraft()      { this.play('updraft.wav', 0.7); }
   fortify()      { this.play('fortify.wav', 0.8); }
   shockwave()    { this.play('shockwave.wav', 1.0); }
+
+  // ---- Bomb sounds ---------------------------------------------------
+
+  bombTick()        { this.play('beep.wav', 0.9); }
+  bombPlanted()     { this.play('planted.wav', 1.0); }
+  bombDefused()     { this.play('blink.wav', 0.9); }
+  bombDefusing()    { this.play('menu_click.wav', 0.5); }
 
   // ---- Spatial (world) sounds ----------------------------------------
 

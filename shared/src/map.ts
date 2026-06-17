@@ -41,6 +41,13 @@ export interface Ramp {
   texture?: string;
 }
 
+/** A bomb plant zone. */
+export interface BombSite {
+  id: "A" | "B";
+  pos: Vec3;
+  radius: number;
+}
+
 export interface GameMap {
   name: string;
   /** Half-extent of the playable floor on X/Z (square arena). */
@@ -49,6 +56,10 @@ export interface GameMap {
   boxes: MapBox[];
   pads?: JumpPad[];
   ramps?: Ramp[];
+  /** CT-team spawn positions (bomb defusal mode). */
+  spawnsCT?: Vec3[];
+  /** Bomb plant zones (bomb defusal mode). */
+  bombSites?: BombSite[];
 }
 
 const v = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
@@ -400,6 +411,82 @@ export const SKYHAVEN: GameMap = {
   ],
 };
 
+const SAND   = 0xd4b896;
+const SANDDK = 0xab8c60;
+const CRATE  = 0x8b6e45;
+const SITE_F = 0xe0b820;
+const FLOORD = 0x5a4830;
+
+/**
+ * "Dust II" — a simplified replica of the classic bomb-defusal map.
+ * Two corridors (Long A east, B Tunnels west) connect T spawn (south)
+ * to bomb sites A (northeast) and B (northwest). A mid area with the
+ * iconic mid-box and a Short-A connector round out the flow.
+ */
+export const DUST2: GameMap = {
+  name: "Dust II",
+  bounds: 52,
+  // T spawns (south) — also used as FFA spawns when combined with CT spawns.
+  spawns: [
+    v(-8, 0, 46), v(6, 0, 44), v(20, 0, 46), v(34, 0, 44), v(44, 0, 46),
+    v(-36, 0, -44), v(-24, 0, -46), v(-12, 0, -44), v(0, 0, -46), v(-48, 0, -44),
+  ],
+  spawnsCT: [
+    v(-36, 0, -44), v(-24, 0, -46), v(-12, 0, -44), v(0, 0, -46), v(-48, 0, -44),
+  ],
+  bombSites: [
+    { id: "A", pos: v(40, 0, -36), radius: 12 },
+    { id: "B", pos: v(-40, 0, -40), radius: 12 },
+  ],
+  boxes: [
+    // ---- Outer shell (sandy) ----
+    { pos: v(0, -0.5, 0), size: v(104, 1, 104), color: FLOORD },
+    { pos: v(0, 4, -52), size: v(104, 8, 1), color: SAND },
+    { pos: v(0, 4, 52), size: v(104, 8, 1), color: SAND },
+    { pos: v(-52, 4, 0), size: v(1, 8, 104), color: SAND },
+    { pos: v(52, 4, 0), size: v(1, 8, 104), color: SAND },
+
+    // ---- A Site (northeast) ----
+    { pos: v(40, 0.05, -36), size: v(22, 0.1, 24), color: SITE_F },       // site floor
+    { pos: v(32, 1.5, -46), size: v(6, 3, 5), color: CRATE },             // CT-side box
+    { pos: v(47, 1.5, -32), size: v(5, 3, 6), color: CRATE },             // T-side box
+    { pos: v(40, 1.5, -26), size: v(5, 3, 4), color: CRATE },             // corner cover
+
+    // ---- Long A corridor (east) ----
+    { pos: v(27, 3.5, 2), size: v(2, 7, 48), color: SAND },               // inner wall (z=-22 to 26)
+    { pos: v(30, 1.5, -20), size: v(4, 3, 4), color: CRATE },             // Long peek box
+    { pos: v(44, 1.5, 16), size: v(5, 3, 4), color: CRATE },              // T corner cover
+
+    // ---- B Site (northwest) ----
+    { pos: v(-40, 0.05, -40), size: v(22, 0.1, 20), color: SITE_F },      // site floor
+    { pos: v(-32, 1.5, -46), size: v(6, 3, 5), color: CRATE },            // CT-side box
+    { pos: v(-47, 1.5, -34), size: v(5, 3, 5), color: CRATE },            // T-side box
+    { pos: v(-40, 1.5, -28), size: v(5, 3, 4), color: CRATE },            // corner cover
+
+    // ---- B Tunnels corridor (west) ----
+    { pos: v(-27, 3.5, 0), size: v(2, 7, 52), color: SAND },              // inner wall (z=-26 to 26)
+    { pos: v(-40, 3.5, 14), size: v(22, 7, 3), color: SANDDK },           // tunnel divider
+    { pos: v(-32, 1.5, 4), size: v(5, 3, 5), color: CRATE },              // tunnel mid cover
+    { pos: v(-44, 1.5, 22), size: v(5, 3, 4), color: CRATE },             // T entrance cover
+
+    // ---- Mid area ----
+    { pos: v(0, 3, -3), size: v(12, 6, 10), color: SAND },                // iconic mid box
+    { pos: v(17, 3.5, -27), size: v(2, 7, 10), color: SAND },             // Short A wall (z=-22 to -32)
+    { pos: v(20, 1.5, -22), size: v(5, 3, 4), color: CRATE },             // Short A corner box
+
+    // ---- CT mid area ----
+    { pos: v(-11, 3.5, -29), size: v(2, 7, 14), color: SAND },            // left CT mid wall
+    { pos: v(11, 3.5, -29), size: v(2, 7, 14), color: SAND },             // right CT mid wall
+    { pos: v(-4, 1.5, -42), size: v(5, 3, 4), color: CRATE },             // CT spawn cover L
+    { pos: v(6, 1.5, -40), size: v(4, 3, 4), color: CRATE },              // CT spawn cover R
+
+    // ---- T spawn area ----
+    { pos: v(-4, 3.5, 22), size: v(20, 7, 2), color: SAND },              // south mid separator
+    { pos: v(18, 1.5, 44), size: v(5, 3, 4), color: CRATE },              // T spawn center box
+    { pos: v(-14, 1.5, 42), size: v(4, 3, 4), color: CRATE },             // T spawn left box
+  ],
+};
+
 export const MAPS: Record<string, GameMap> = {
   neon_yard: NEON_YARD,
   overdrive: OVERDRIVE,
@@ -407,4 +494,5 @@ export const MAPS: Record<string, GameMap> = {
   spire: SPIRE,
   atrium: ATRIUM,
   skyhaven: SKYHAVEN,
+  dust2: DUST2,
 };

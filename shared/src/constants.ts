@@ -36,6 +36,8 @@ export const MOVE = {
   eyeHeight: 1.6,
   /** Eye height while crouching. */
   crouchEyeHeight: 1.0,
+  /** Speed multiplier while crouch-walking (slower than standing). */
+  crouchSpeedMul: 0.5,
   /** Collision capsule radius. */
   radius: 0.4,
   /** Total player height (feet to crown). */
@@ -45,17 +47,17 @@ export const MOVE = {
 /** Crouch-slide tuning. A slide commits your direction and bleeds momentum. */
 export const SLIDE = {
   /** Minimum ground speed (m/s) needed to start a slide. */
-  minSpeed: 7,
-  /** Speed the slide snaps you to on initiation (gives a small boost). */
-  boost: 13,
+  minSpeed: 6,
+  /** Speed the slide snaps you to on initiation (a clear boost over run speed). */
+  boost: 15,
   /** Slide ends once you decelerate below this. */
-  endSpeed: 5,
-  /** Slide friction — low (keeps momentum) but enough to gradually slow you. */
-  friction: 4.5,
+  endSpeed: 3.5,
+  /** Slide friction — low so the slide keeps momentum and lasts. */
+  friction: 1.3,
   /** Only a slight steer is allowed mid-slide (you're mostly committed). */
   steer: 1.2,
   /** Max slide duration (s) before it auto-ends. */
-  duration: 1.1,
+  duration: 1.5,
 };
 
 /** Dash ability tuning. */
@@ -68,9 +70,22 @@ export const DASH = {
 /** Server match settings. */
 export const MATCH = {
   /** Round length (ms). Highest kills at time wins; then it restarts. */
-  durationMs: 10 * 60 * 1000,
+  durationMs: 600_000,
   /** Intermission + map vote duration (ms) between rounds. */
   intermissionMs: 15_000,
+};
+
+/** Bomb defusal mode constants. */
+export const BOMB = {
+  plantTime: 3.2,       // seconds to plant
+  defuseTime: 5.0,      // seconds to defuse
+  fuseMs: 40_000,       // ms until detonation after plant
+  roundMs: 105_000,     // 1:45 round duration
+  switchAt: 15,         // switch sides after this many rounds
+  maxRounds: 30,
+  explodeDamage: 500,   // one-hit kill
+  explodeRadius: 60,    // units
+  proximityRadius: 4,   // max distance to plant/defuse
 };
 
 // ---------------------------------------------------------------------------
@@ -246,7 +261,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     headshotMul: 1,
     auto: false,
     melee: true,
-    speedMul: 1.35,
+    speedMul: 1.5,
     doubleJump: true,
     slot: 4,
   },

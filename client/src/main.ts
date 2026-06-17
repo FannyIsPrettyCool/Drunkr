@@ -14,6 +14,11 @@ const quickBtn = document.getElementById("quickplay") as HTMLButtonElement;
 const createBtn = document.getElementById("create-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh") as HTMLButtonElement;
 
+const cfgMode = document.getElementById("cfg-mode") as HTMLSelectElement;
+const cfgMapRow = document.getElementById("cfg-map-row")!;
+const cfgCustomRow = document.getElementById("cfg-custom-row")!;
+const cfgBotsRow = document.getElementById("cfg-bots-row")!;
+const cfgBotCountRow = document.getElementById("cfg-botcount-row")!;
 const cfgMap = document.getElementById("cfg-map") as HTMLSelectElement;
 const cfgDiff = document.getElementById("cfg-diff") as HTMLSelectElement;
 const cfgBots = document.getElementById("cfg-bots") as HTMLInputElement;
@@ -145,6 +150,15 @@ for (const tab of document.querySelectorAll<HTMLElement>(".tab")) {
 cfgBotCount.addEventListener("input", () => (cfgBotCountVal.textContent = cfgBotCount.value));
 cfgBots.addEventListener("change", () => (cfgBotCount.disabled = !cfgBots.checked));
 
+function applyModeUI() {
+  const isBomb = cfgMode.value === "bomb";
+  cfgMapRow.classList.toggle("hidden", isBomb);
+  cfgCustomRow.classList.toggle("hidden", isBomb);
+  // Bots are available in bomb mode too.
+}
+cfgMode.addEventListener("change", applyModeUI);
+applyModeUI();
+
 // --- Room list -------------------------------------------------------------
 function renderRooms(rooms: RoomInfo[]) {
   if (game) return;
@@ -202,17 +216,19 @@ cfgCustomFile.addEventListener("change", async () => {
 
 function createRoom() {
   if (!net.connected || game) return;
+  const isBomb = cfgMode.value === "bomb";
   net.send({
     t: "create",
     name: callsign(),
     ...prefs(),
     config: {
       name: cfgName.value.trim(),
-      mapId: cfgMap.value,
+      mapId: isBomb ? "dust2" : cfgMap.value,
       bots: cfgBots.checked,
       botCount: Number(cfgBotCount.value),
       difficulty: cfgDiff.value as BotDifficulty,
-      ...(customMap ? { customMap: customMap as never } : {}),
+      mode: isBomb ? "bomb" : "ffa",
+      ...(!isBomb && customMap ? { customMap: customMap as never } : {}),
     },
   });
   status.textContent = "creating server…";

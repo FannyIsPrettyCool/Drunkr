@@ -112,12 +112,12 @@ export class LocalPlayer {
     return true;
   }
 
-  update(input: Input, dt: number): { slideStarted: boolean; landed: boolean; jumped: boolean } {
+  update(input: Input, dt: number): { slideStarted: boolean; landed: boolean; jumped: boolean; padLaunched: boolean } {
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
 
     if (this.dead) {
       this.updateCamera(0, dt);
-      return { slideStarted: false, landed: false, jumped: false };
+      return { slideStarted: false, landed: false, jumped: false, padLaunched: false };
     }
 
     this.crouching = input.crouching;
@@ -153,7 +153,7 @@ export class LocalPlayer {
       pos: this.pos, vel: this.vel, grounded: this.grounded,
       sliding: this.sliding, slideTime: this.slideTime, jumpsUsed: this.jumpsUsed,
     };
-    stepMovement(
+    const moveResult = stepMovement(
       state,
       {
         wishX: wx, wishZ: wz, wishSpeed,
@@ -179,6 +179,7 @@ export class LocalPlayer {
       slideStarted: this.sliding && !wasSliding,
       landed: this.grounded && !wasGrounded,
       jumped: this.jumpsUsed > wasJumps,
+      padLaunched: moveResult.padLaunched,
     };
   }
 

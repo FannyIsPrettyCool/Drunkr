@@ -13,12 +13,16 @@ interface Snap {
 
 class Remote {
   readonly group = new THREE.Group();
+  /** Everything above the hips — lowered/leaned for crouch & slide. */
+  private upper: THREE.Group;
   private head: THREE.Group;
   private legL: THREE.Group;
   private legR: THREE.Group;
   private armL: THREE.Group;
   private armR: THREE.Group;
   private hand: THREE.Group;
+  /** Holds the weapon in front of the chest; pitches with aim. */
+  private weaponHold: THREE.Group;
   private torso: THREE.Mesh;
   private buffer: Snap[] = [];
   private bodyMat: THREE.MeshStandardMaterial;
@@ -29,6 +33,10 @@ class Remote {
   private stride = 0;
   private prev = new THREE.Vector3();
   private hasPrev = false;
+  private posture = 0;
+  private crouchAmt = 0;
+  private slideAmt = 0;
+  private lastPitch = 0;
   name: string;
   kills = 0;
   deaths = 0;
@@ -41,13 +49,19 @@ class Remote {
       color: this.color, emissive, emissiveIntensity: 0.6, roughness: 0.5, metalness: 0.2,
     });
 
+    // Upper body (torso, head, arms, weapon) — pivots at the hips so it can
+    // dip for a crouch and lean for a slide.
+    this.upper = new THREE.Group();
+    this.upper.position.y = MOVE.height * 0.45;
+    this.group.add(this.upper);
+
     this.torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.3), this.bodyMat);
-    this.torso.position.y = MOVE.height * 0.58;
-    this.group.add(this.torso);
+    this.torso.position.y = MOVE.height * 0.58 - this.upper.position.y;
+    this.upper.add(this.torso);
 
     // Head (a group so we can pitch it).
     this.head = new THREE.Group();
-    this.head.position.y = MOVE.height * 0.9;
+    this.head.position.y = MOVE.height * 0.9 - this.upper.position.y;
     const headMesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.34, 0.34),
       new THREE.MeshStandardMaterial({ color: 0x0a0c18, emissive: this.color, emissiveIntensity: 0.4 }),
@@ -59,23 +73,27 @@ class Remote {
     );
     visor.position.set(0, 0, 0.18);
     this.head.add(visor);
-    this.group.add(this.head);
+    this.upper.add(this.head);
 
-    // Legs (pivoting at the hip).
+    // Legs (pivoting at the hip, on the body so they stay planted).
     this.legL = this.makeLimb(0.2, 0.8, 0.24, -0.15, MOVE.height * 0.42);
     this.legR = this.makeLimb(0.2, 0.8, 0.24, 0.15, MOVE.height * 0.42);
     this.group.add(this.legL, this.legR);
 
-    // Arms (pivoting at the shoulder).
-    this.armL = this.makeLimb(0.15, 0.5, 0.16, -0.34, MOVE.height * 0.64);
-    this.armR = this.makeLimb(0.15, 0.5, 0.16, 0.34, MOVE.height * 0.64);
-    this.group.add(this.armL, this.armR);
+    // Arms (pivoting at the shoulder, on the upper body).
+    const shoulderY = MOVE.height * 0.64 - this.upper.position.y;
+    this.armL = this.makeLimb(0.15, 0.5, 0.16, -0.34, shoulderY);
+    this.armR = this.makeLimb(0.15, 0.5, 0.16, 0.34, shoulderY);
+    this.upper.add(this.armL, this.armR);
 
-    // The right hand holds the weapon; angled to point forward.
+    // Weapon held in front of the chest with both hands; faces forward (local
+    // +Z, like the visor) and pitches with aim.
+    this.weaponHold = new THREE.Group();
+    this.weaponHold.position.set(0.05, MOVE.height * 0.6 - this.upper.position.y, 0.2);
+    this.upper.add(this.weaponHold);
     this.hand = new THREE.Group();
-    this.hand.position.set(0, -0.4, -0.1);
-    this.armR.add(this.hand);
-    this.armR.rotation.x = -1.2; // raise the gun arm forward
+    this.hand.rotation.y = Math.PI; // weapon meshes point -Z; flip to face +Z
+    this.weaponHold.add(this.hand);
 
     this.setWeapon(state.weapon ?? "ak");
 
@@ -131,35 +149,66 @@ class Remote {
       color: 0x16182a, emissive: 0x18e0ff, emissiveIntensity: 0.4, metalness: 0.6, roughness: 0.4,
     });
     const accent = new THREE.MeshStandardMaterial({ color: 0xff2d9b, emissive: 0xff2d9b, emissiveIntensity: 0.9 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x39414f, metalness: 0.85, roughness: 0.3 });
     const box = (w: number, h: number, d: number, m: THREE.Material, z: number, x = 0, y = 0) => {
       const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
       me.position.set(x, y, z);
       g.add(me);
+      return me;
     };
     switch (id) {
-      case "sniper":
-        box(0.08, 0.1, 0.9, mat, -0.45);
-        box(0.05, 0.05, 0.6, mat, -1.0);
-        box(0.06, 0.06, 0.2, accent, -0.45, 0, 0.09);
-        break;
-      case "shotgun":
-        box(0.07, 0.08, 0.6, mat, -0.4, -0.05);
-        box(0.07, 0.08, 0.6, mat, -0.4, 0.05);
-        break;
-      case "katana": {
-        const blade = new THREE.Mesh(
-          new THREE.BoxGeometry(0.04, 0.04, 1.1),
-          new THREE.MeshStandardMaterial({ color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.4 }),
-        );
-        blade.position.z = -0.6;
-        g.add(blade);
-        box(0.05, 0.05, 0.16, accent, -0.02);
+      case "sniper": {
+        box(0.065, 0.09, 0.46, mat, -0.4);              // receiver
+        box(0.03, 0.03, 0.5, steel, -0.95);             // long barrel
+        box(0.045, 0.045, 0.1, steel, -1.26);           // muzzle
+        box(0.05, 0.05, 0.32, mat, -0.46, 0, 0.12);     // scope tube
+        box(0.052, 0.052, 0.04, accent, -0.62, 0, 0.12); // front lens
+        box(0.045, 0.13, 0.07, mat, 0.02, 0, -0.12).rotation.x = 0.5; // grip
+        box(0.05, 0.07, 0.58, mat, 0.12);               // stock (bridges to receiver)
         break;
       }
-      default: // ak
-        box(0.08, 0.12, 0.55, mat, -0.32);
-        box(0.05, 0.05, 0.3, mat, -0.65);
-        box(0.07, 0.18, 0.08, mat, -0.18, 0, -0.16);
+      case "shotgun": {
+        box(0.1, 0.1, 0.28, mat, -0.2);                 // receiver
+        box(0.036, 0.036, 0.62, steel, -0.62, 0, 0.045);  // upper barrel
+        box(0.036, 0.036, 0.62, steel, -0.62, 0, -0.045); // lower barrel
+        box(0.09, 0.016, 0.42, accent, -0.62);          // neon rib
+        box(0.05, 0.13, 0.08, mat, 0.04, 0, -0.12).rotation.x = 0.4; // grip
+        box(0.07, 0.1, 0.48, mat, 0.16);                // stock (bridges to receiver)
+        break;
+      }
+      case "katana": {
+        const steel = new THREE.MeshStandardMaterial({
+          color: 0xbfe6ff, emissive: 0x0c3b58, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
+        });
+        const edge = new THREE.MeshStandardMaterial({
+          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.7,
+        });
+        // Flat blade + glowing cutting edge.
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.09, 1.15), steel);
+        blade.position.set(0, 0.02, -0.62);
+        g.add(blade);
+        const cut = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.028, 1.15), edge);
+        cut.position.set(0, -0.03, -0.62);
+        g.add(cut);
+        // Angled tip.
+        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.075, 0.16), steel);
+        tip.position.set(0, 0.09, -1.24);
+        tip.rotation.x = 0.3;
+        g.add(tip);
+        box(0.16, 0.13, 0.03, accent, -0.04);  // guard
+        box(0.05, 0.05, 0.22, mat, 0.07);       // handle
+        break;
+      }
+      default: { // ak
+        box(0.07, 0.1, 0.42, mat, -0.3);                // receiver
+        box(0.05, 0.05, 0.26, mat, -0.62);              // handguard
+        box(0.03, 0.03, 0.18, steel, -0.86);            // barrel tip
+        box(0.055, 0.15, 0.1, mat, -0.15, 0, -0.13).rotation.x = 0.45; // banana mag
+        box(0.05, 0.14, 0.07, mat, 0.02, 0, -0.12).rotation.x = 0.45;  // grip
+        box(0.05, 0.08, 0.46, mat, 0.13);               // stock (bridges to receiver)
+        box(0.072, 0.014, 0.26, accent, -0.3, 0, 0.06); // neon accent
+        break;
+      }
     }
     g.traverse((o) => { o.raycast = () => {}; }); // gun isn't a hitbox
     this.weaponMesh = g;
@@ -183,6 +232,7 @@ class Remote {
     this.kills = state.kills;
     this.deaths = state.deaths;
     this.group.visible = !state.dead;
+    this.posture = state.posture ?? 0;
     this.setWeapon(state.weapon ?? "ak");
     this.setInvis(!!state.invis);
     this.buffer.push({
@@ -230,11 +280,12 @@ class Remote {
     // aim direction (the player's forward is local -Z).
     this.group.rotation.y = yaw + Math.PI;
     this.head.rotation.x = -pitch;
+    this.lastPitch = pitch;
 
     this.animate(x, z, dt);
   }
 
-  /** Procedural walk cycle driven by horizontal speed. */
+  /** Procedural walk cycle, two-handed weapon hold, and crouch/slide posture. */
   private animate(x: number, z: number, dt: number) {
     let speed = 0;
     if (this.hasPrev && dt > 0) {
@@ -243,17 +294,39 @@ class Remote {
     this.prev.set(x, 0, z);
     this.hasPrev = true;
 
+    // Ease posture (crouch / slide) toward the latest network value.
+    const k = Math.min(1, 12 * dt);
+    this.crouchAmt += ((this.posture === 1 ? 1 : 0) - this.crouchAmt) * k;
+    this.slideAmt += ((this.posture === 2 ? 1 : 0) - this.slideAmt) * k;
+
     const moving = Math.min(1, speed / MOVE.speed);
     this.stride += dt * (4 + speed * 0.9);
-    const swing = Math.sin(this.stride) * 0.7 * moving;
+    const swing = Math.sin(this.stride) * 0.7 * moving * (1 - this.slideAmt);
 
-    this.legL.rotation.x = swing;
-    this.legR.rotation.x = -swing;
-    this.armL.rotation.x = -swing * 0.8;
-    // Right arm stays raised to aim, with a little sway.
-    this.armR.rotation.x = -1.2 + swing * 0.1;
-    // Subtle torso/head bob.
-    this.torso.position.y = MOVE.height * 0.58 + Math.abs(Math.sin(this.stride)) * 0.03 * moving;
+    // Legs: walk cycle; one leg forward and one trailing during a slide.
+    this.legL.rotation.x = swing - this.slideAmt * 0.7 + this.crouchAmt * 0.25;
+    this.legR.rotation.x = -swing + this.slideAmt * 1.0 + this.crouchAmt * 0.25;
+
+    // Weapon hold: both arms reach forward and inward onto the weapon.
+    const aim = -this.lastPitch;
+    if (this.weaponId === "katana") {
+      // Katana stance: both hands together on the handle, blade out sideways.
+      this.weaponHold.rotation.set(-this.lastPitch * 0.4, 0.8, 0.45);
+      this.armR.rotation.set(-1.28 + swing * 0.05, 0, -0.18);
+      this.armL.rotation.set(-1.36 - swing * 0.05, 0, 0.32);
+    } else {
+      this.weaponHold.rotation.set(-this.lastPitch, 0, 0);
+      this.armR.rotation.set(-1.45 + aim * 0.4 + swing * 0.05, 0, -0.28);
+      this.armL.rotation.set(-1.45 + aim * 0.4 - swing * 0.05, 0, 0.55);
+    }
+
+    // Torso bob (relative to the upper-body group).
+    const torsoBaseY = MOVE.height * 0.13;
+    this.torso.position.y = torsoBaseY + Math.abs(Math.sin(this.stride)) * 0.03 * moving;
+
+    // Posture: dip the upper body for a crouch, dip + lean forward for a slide.
+    this.upper.position.y = MOVE.height * 0.45 - 0.34 * this.crouchAmt - 0.42 * this.slideAmt;
+    this.upper.rotation.x = 0.55 * this.slideAmt;
   }
 
   dispose(scene: THREE.Scene) {
@@ -319,6 +392,15 @@ export class RemotePlayers {
   update(dt: number) {
     const renderTime = performance.now() + this.clockOffset - INTERP_DELAY;
     for (const r of this.players.values()) r.render(renderTime, dt);
+  }
+
+  /**
+   * Server-clock time (ms) the remote avatars are currently rendered at. Sent
+   * with shots so the server can rewind targets to the exact instant the
+   * shooter saw them (lag compensation).
+   */
+  renderTimeServer(): number {
+    return performance.now() + this.clockOffset - INTERP_DELAY;
   }
 
   clear() {

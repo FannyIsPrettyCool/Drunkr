@@ -46,13 +46,38 @@ interface RampZone {
   baseY: number; height: number; dir: number;
 }
 
+/** A box rotated about the vertical (Y) axis — collided as a true oriented box
+ * so bullets pass through the empty corners and you don't bump invisible space. */
+interface OBBY {
+  cx: number; cy: number; cz: number; // center
+  hx: number; hy: number; hz: number; // half-extents (local)
+  cos: number; sin: number;           // cos/sin of the yaw
+}
+
 export class CollisionWorld {
   readonly boxes: AABB[];
+  /** Y-rotated boxes, collided as oriented boxes (not their enclosing AABB). */
+  readonly obbs: OBBY[];
   private pads: PadZone[];
   private ramps: RampZone[];
 
   constructor(map: GameMap) {
-    this.boxes = map.boxes.map(boxToAABB);
+    this.boxes = [];
+    this.obbs = [];
+    for (const b of map.boxes) {
+      const r = b.rot;
+      // Pure Y rotation → oriented box. No rotation (or X/Z rotation) → AABB
+      // (X/Z tilt still falls back to the enclosing AABB, as before).
+      if (r && Math.abs(r.x) < 1e-4 && Math.abs(r.z) < 1e-4 && Math.abs(r.y) > 1e-4) {
+        this.obbs.push({
+          cx: b.pos.x, cy: b.pos.y, cz: b.pos.z,
+          hx: b.size.x / 2, hy: b.size.y / 2, hz: b.size.z / 2,
+          cos: Math.cos(r.y), sin: Math.sin(r.y),
+        });
+      } else {
+        this.boxes.push(boxToAABB(b));
+      }
+    }
     this.pads = (map.pads ?? []).map((p) => ({
       minX: p.pos.x - p.size.x / 2,
       maxX: p.pos.x + p.size.x / 2,
@@ -167,7 +192,77 @@ export class CollisionWorld {
       vel.y = 0;
     }
 
+    // --- Oriented (Y-rotated) boxes ---
+    for (const o of this.obbs) {
+      const r = this.resolveOBB(pos, vel, radius, height, o);
+      grounded = grounded || r.grounded;
+      hitWall = hitWall || r.hitWall;
+    }
+
     return { grounded, hitWall };
+  }
+
+  /**
+   * Push the player capsule out of a Y-rotated box. The player is treated as a
+   * vertical cylinder (radius in XZ, `height` in Y), which stays a circle under
+   * rotation, so we resolve in the box's local frame and pick the shallowest
+   * penetration axis (up / down / horizontal-along-face).
+   */
+  private resolveOBB(
+    pos: Vec3, vel: Vec3, radius: number, height: number, o: OBBY,
+  ): { grounded: boolean; hitWall: boolean } {
+    const feet = pos.y, head = pos.y + height;
+    if (head <= o.cy - o.hy || feet >= o.cy + o.hy) return { grounded: false, hitWall: false };
+
+    // World → local XZ (rotate by -yaw about the box centre).
+    const rx = pos.x - o.cx, rz = pos.z - o.cz;
+    const lx = rx * o.cos + rz * o.sin;
+    const lz = -rx * o.sin + rz * o.cos;
+
+    const clx = lx < -o.hx ? -o.hx : lx > o.hx ? o.hx : lx;
+    const clz = lz < -o.hz ? -o.hz : lz > o.hz ? o.hz : lz;
+    const ddx = lx - clx, ddz = lz - clz;
+    const distSq = ddx * ddx + ddz * ddz;
+    const inside = distSq < 1e-8;
+    if (!inside && distSq >= radius * radius) return { grounded: false, hitWall: false };
+
+    const penUp = (o.cy + o.hy) - feet;   // raise feet onto the top
+    const penDown = head - (o.cy - o.hy); // drop head below the bottom
+
+    // Horizontal push-out direction + depth in local space.
+    let nlx: number, nlz: number, horizPen: number;
+    if (inside) {
+      const dxp = o.hx - lx, dxn = lx + o.hx, dzp = o.hz - lz, dzn = lz + o.hz;
+      const m = Math.min(dxp, dxn, dzp, dzn);
+      if (m === dxp) { nlx = 1; nlz = 0; horizPen = dxp + radius; }
+      else if (m === dxn) { nlx = -1; nlz = 0; horizPen = dxn + radius; }
+      else if (m === dzp) { nlx = 0; nlz = 1; horizPen = dzp + radius; }
+      else { nlx = 0; nlz = -1; horizPen = dzn + radius; }
+    } else {
+      const dist = Math.sqrt(distSq);
+      nlx = ddx / dist; nlz = ddz / dist;
+      horizPen = radius - dist;
+    }
+
+    // Resolve along the shallowest axis.
+    if (penUp <= horizPen && penUp <= penDown) {
+      pos.y = o.cy + o.hy;
+      if (vel.y < 0) vel.y = 0;
+      return { grounded: true, hitWall: false };
+    }
+    if (penDown <= horizPen) {
+      pos.y = o.cy - o.hy - height;
+      if (vel.y > 0) vel.y = 0;
+      return { grounded: false, hitWall: false };
+    }
+    // Local push direction → world.
+    const wx = nlx * o.cos - nlz * o.sin;
+    const wz = nlx * o.sin + nlz * o.cos;
+    pos.x += wx * horizPen;
+    pos.z += wz * horizPen;
+    const vn = vel.x * wx + vel.z * wz;
+    if (vn < 0) { vel.x -= vn * wx; vel.z -= vn * wz; }
+    return { grounded: false, hitWall: true };
   }
 
   /** Does the segment from `a` to `b` hit any solid box? (line-of-sight test) */
@@ -187,6 +282,19 @@ export class CollisionWorld {
         ) {
           return true;
         }
+      }
+    }
+    // Y-rotated boxes: test each sample point inside the oriented box (so the
+    // empty corners of the enclosing AABB no longer block shots / sightlines).
+    for (const o of this.obbs) {
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        const py = a.y + dy * t;
+        if (py <= o.cy - o.hy || py >= o.cy + o.hy) continue;
+        const rx = (a.x + dx * t) - o.cx, rz = (a.z + dz * t) - o.cz;
+        const lx = rx * o.cos + rz * o.sin;
+        const lz = -rx * o.sin + rz * o.cos;
+        if (lx > -o.hx && lx < o.hx && lz > -o.hz && lz < o.hz) return true;
       }
     }
     return false;

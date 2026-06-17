@@ -110,6 +110,10 @@ export class Input {
     return this.isDown("ShiftLeft") || this.isDown("ShiftRight");
   }
 
+  get useHeld(): boolean {
+    return this.isDown("KeyE");
+  }
+
   get showScores(): boolean {
     return this.keys.has("CapsLock");
   }

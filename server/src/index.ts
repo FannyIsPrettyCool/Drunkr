@@ -13,11 +13,13 @@ import {
   type PlayerPrefs,
   MOVE,
   MATCH,
+  BOMB,
   PLAYER,
   WEAPONS,
   DEFAULT_WEAPON,
   LOADOUT_WEAPONS,
   CLASSES,
+  CLASS_IDS,
   DEFAULT_CLASS,
   ABILITIES,
   INVIS,
@@ -29,6 +31,7 @@ import {
   TICK_RATE,
   MAPS,
   CollisionWorld,
+  NavGrid,
   stepMovement,
   TEXTURE_KEYS,
   type ProjectileState,
@@ -38,6 +41,10 @@ const PORT = Number(process.env.PORT ?? 2567);
 const DEFAULT_MAP = process.env.MAP && MAPS[process.env.MAP] ? process.env.MAP : "neon_yard";
 const DEFAULT_BOTS = Number(process.env.BOTS ?? 4);
 const MAX_PLAYERS = 12;
+/** How far back (ms) lag-compensated shots may rewind targets. */
+const LAGCOMP_WINDOW_MS = 1000;
+/** Equip delay (ms) before a freshly-switched weapon may fire. */
+const WEAPON_SWITCH_MS = 250;
 
 const weaponOf = (a: Actor) => WEAPONS[a.state.weapon] ?? WEAPONS[DEFAULT_WEAPON];
 
@@ -53,9 +60,12 @@ const BOT_DIFF: Record<BotDifficulty, {
 const BOT_NAMES = ["GHOST", "VIPER", "NEON", "RAZR", "BYTE", "HEX", "FLUX", "ZERO", "DRX", "KILO"];
 
 interface BotAI {
-  waypoint: Vec3;
+  // Navigation: a current goal + the A* path (world waypoints) toward it.
+  goal: Vec3 | null;
+  pathGoal: Vec3 | null;
+  path: Vec3[];
+  pathIdx: number;
   repathAt: number;
-  nextJumpAt: number;
   targetId: number;
   retargetAt: number;
   nextShotAt: number;
@@ -67,7 +77,44 @@ interface BotAI {
   // Magazine model so bots can't fire faster than they could reload.
   ammo: number;
   reloadUntil: number;
+  // Combat strafing.
+  strafeDir: number;
+  strafeUntil: number;
+  // Stuck detection (forces a repath if a bot stops making progress).
+  stuckAt: number;
+  stuckX: number;
+  stuckZ: number;
+  // Weapon/ability rotation.
+  weaponSwitchAt: number;
+  abilityFAt: number;
+  abilityCAt: number;
+  // Bomb mode: which site this bot defends/patrols (CT) — index into bombSites.
+  bombSiteIdx: number;
+  // Behavioral personality (set from the equipped weapon).
+  behavior: BotBehavior;
+  /** Whether this bot bunny-hops (vs. just running) while travelling. */
+  bhop: boolean;
+  /** A held position for campers; re-picked periodically. */
+  campSpot: Vec3 | null;
+  campUntil: number;
 }
+
+type BotBehavior = "rush" | "roam" | "camp";
+
+/** Pick a movement personality to suit the weapon. */
+function botBehaviorFor(weaponId: string): { behavior: BotBehavior; bhop: boolean } {
+  // Snipers mostly hold angles (a few relocate); shotguns rush in close.
+  if (weaponId === "sniper") return Math.random() < 0.7 ? { behavior: "camp", bhop: false } : { behavior: "roam", bhop: false };
+  if (weaponId === "shotgun") return { behavior: "rush", bhop: Math.random() < 0.7 };
+  // AK / default: aggressive or roaming, rarely camps; mixed bhop.
+  const r = Math.random();
+  const behavior: BotBehavior = r < 0.55 ? "rush" : r < 0.9 ? "roam" : "camp";
+  return { behavior, bhop: Math.random() < 0.55 };
+}
+
+/** Minimum horizontal speed before a bot starts bunny-hopping (so it builds
+ * ground speed first instead of bouncing in place). */
+const BHOP_MIN_SPEED = 6;
 
 /** A participant: a connected client (ws set) or a bot (ai set). */
 interface Actor {
@@ -85,6 +132,15 @@ interface Actor {
   msgCount: number;
   /** Per-ability cooldown (earliest next-use timestamp). */
   abilityCd: Record<string, number>;
+  /** Recent positions (server-clock ms) for lag-compensated hit rewind. */
+  posHistory: PosSample[];
+}
+
+interface PosSample {
+  t: number;
+  x: number;
+  y: number;
+  z: number;
 }
 
 interface Projectile {
@@ -104,6 +160,8 @@ interface Room {
   /** Set when the map is a custom (editor) map, sent to joiners in welcome. */
   customMap?: GameMap;
   world: CollisionWorld;
+  /** Navigation grid for bot pathfinding (rebuilt when the map changes). */
+  nav: NavGrid;
   difficulty: BotDifficulty;
   botsEnabled: boolean;
   botCount: number;
@@ -120,6 +178,23 @@ interface Room {
   voteMaps: string[];
   /** actorId -> voted mapId. */
   mapVotes: Map<number, string>;
+  // Bomb defusal mode
+  mode: "ffa" | "bomb";
+  bombTeams: Map<number, "T" | "CT">;
+  bombPlanted: boolean;
+  bombPos: Vec3 | null;
+  bombDetonatesAt: number;
+  bombRound: number;
+  bombScoreT: number;
+  bombScoreCT: number;
+  bombRoundEndsAt: number;
+  bombRoundOver: boolean;
+  bombPlanterId: number;
+  bombPlanterStart: number;
+  bombDefuserId: number;
+  bombDefuserStart: number;
+  /** Which bomb site the T bots commit to this round (index into bombSites). */
+  botTargetSite: number;
 }
 
 let nextProjId = 1;
@@ -175,18 +250,21 @@ function validateMap(m: unknown): GameMap | null {
 // --- room lifecycle --------------------------------------------------------
 
 function createRoom(config: RoomConfig, persistent = false): Room {
-  // A validated custom map (from the editor) takes precedence over a built-in.
-  const custom = config.customMap ? validateMap(config.customMap) : null;
-  const mapId = custom ? "custom" : MAPS[config.mapId] ? config.mapId : DEFAULT_MAP;
-  const map = custom ?? MAPS[mapId];
+  const isBomb = config.mode === "bomb";
+  // Bomb rooms always use dust2; custom maps are ignored in bomb mode.
+  const custom = !isBomb && config.customMap ? validateMap(config.customMap) : null;
+  const mapId = isBomb ? "dust2" : (custom ? "custom" : MAPS[config.mapId] ? config.mapId : DEFAULT_MAP);
+  const map = MAPS[mapId] ?? custom ?? MAPS[DEFAULT_MAP];
   const id = `r${nextRoomNum++}`;
+  const world = new CollisionWorld(map);
   const room: Room = {
     id,
     name: (config.name || `${map.name} #${id}`).slice(0, 24),
     mapId,
     map,
     customMap: custom ?? undefined,
-    world: new CollisionWorld(map),
+    world,
+    nav: new NavGrid(world, map.bounds),
     difficulty: config.difficulty in BOT_DIFF ? config.difficulty : "normal",
     botsEnabled: config.bots,
     botCount: config.bots ? clamp(Math.round(config.botCount), 0, 10) : 0,
@@ -199,9 +277,26 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     intermissionWinner: "",
     voteMaps: [],
     mapVotes: new Map(),
+    mode: isBomb ? "bomb" : "ffa",
+    bombTeams: new Map(),
+    bombPlanted: false,
+    bombPos: null,
+    bombDetonatesAt: 0,
+    bombRound: 1,
+    bombScoreT: 0,
+    bombScoreCT: 0,
+    bombRoundEndsAt: 0,
+    bombRoundOver: false,
+    bombPlanterId: -1,
+    bombPlanterStart: 0,
+    bombDefuserId: -1,
+    bombDefuserStart: 0,
+    botTargetSite: 0,
   };
   rooms.set(id, room);
   for (let i = 0; i < room.botCount; i++) spawnBot(room);
+  // Bomb rooms: assign teams to bots now; first real player join triggers round start.
+  if (isBomb && room.actors.size > 0) assignBombTeams(room);
   return room;
 }
 
@@ -312,7 +407,7 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
     yaw: 0, pitch: 0,
     health: PLAYER.maxHealth, hue,
     kills: 0, deaths: 0, dead: false,
-    weapon, cls, invis: false,
+    weapon, cls, invis: false, posture: 0,
   };
 }
 
@@ -328,18 +423,69 @@ function raySphere(o: Vec3, d: Vec3, c: Vec3, r: number): number {
   return t >= 0 ? t : -1;
 }
 
-function rayHitsPlayer(origin: Vec3, dir: Vec3, p: PlayerState) {
-  const chest = { x: p.pos.x, y: p.pos.y + MOVE.height * 0.55, z: p.pos.z };
-  const head = { x: p.pos.x, y: p.pos.y + MOVE.height * 0.92, z: p.pos.z };
-  const bodyHit = raySphere(origin, dir, chest, MOVE.radius + 0.15);
-  const headHit = raySphere(origin, dir, head, 0.28);
+// Body hitbox: a stack of overlapping spheres from the feet to the shoulders so
+// the server covers the whole visible avatar (legs included), matching what the
+// client raycasts against its mesh. The head is a tighter sphere for headshots.
+const BODY_SPHERES: { y: number; r: number }[] = [
+  { y: 0.35, r: 0.42 }, // legs / lower body
+  { y: 0.70, r: 0.42 },
+  { y: 1.05, r: 0.44 }, // chest
+  { y: 1.40, r: 0.40 }, // shoulders
+];
+const HEAD_SPHERE = { y: MOVE.height * 0.92, r: 0.3 };
+
+function rayHitsPlayer(origin: Vec3, dir: Vec3, pos: Vec3) {
+  let bodyHit = -1;
+  for (const s of BODY_SPHERES) {
+    const c = { x: pos.x, y: pos.y + s.y, z: pos.z };
+    const d = raySphere(origin, dir, c, s.r);
+    if (d >= 0 && (bodyHit < 0 || d < bodyHit)) bodyHit = d;
+  }
+  const headC = { x: pos.x, y: pos.y + HEAD_SPHERE.y, z: pos.z };
+  const headHit = raySphere(origin, dir, headC, HEAD_SPHERE.r);
   if (headHit >= 0 && (bodyHit < 0 || headHit <= bodyHit))
     return { hit: true, head: true, dist: headHit };
   if (bodyHit >= 0) return { hit: true, head: false, dist: bodyHit };
   return { hit: false, head: false, dist: Infinity };
 }
 
-function handleShoot(room: Room, shooter: Actor, origin: Vec3, dirs: Vec3[], melee: boolean) {
+/**
+ * Where an actor was at server-clock time `t`, interpolated from its position
+ * history (lag compensation). Falls back to the live position when `t` is in
+ * the future, older than recorded history, or unset.
+ */
+function rewindPos(actor: Actor, t: number | undefined): Vec3 {
+  const live = actor.state.pos;
+  if (t === undefined) return live;
+  const h = actor.posHistory;
+  if (h.length === 0) return live;
+  const newest = h[h.length - 1];
+  if (t >= newest.t) return live;
+  const oldest = h[0];
+  if (t <= oldest.t) return { x: oldest.x, y: oldest.y, z: oldest.z };
+  for (let i = h.length - 1; i > 0; i--) {
+    const b = h[i], a = h[i - 1];
+    if (a.t <= t && t <= b.t) {
+      const span = b.t - a.t || 1;
+      const f = (t - a.t) / span;
+      return {
+        x: a.x + (b.x - a.x) * f,
+        y: a.y + (b.y - a.y) * f,
+        z: a.z + (b.z - a.z) * f,
+      };
+    }
+  }
+  return live;
+}
+
+function handleShoot(
+  room: Room,
+  shooter: Actor,
+  origin: Vec3,
+  dirs: Vec3[],
+  melee: boolean,
+  clientTime?: number,
+) {
   const w = weaponOf(shooter);
   // Anti-cheat: the muzzle must be near the shooter's actual eye position so a
   // client can't fire rays from across the map.
@@ -359,17 +505,31 @@ function handleShoot(room: Room, shooter: Actor, origin: Vec3, dirs: Vec3[], mel
     shooter.id,
   );
 
+  // Clamp the rewind to a sane window so clock skew / stale packets can't make
+  // shots resolve against ancient or future positions.
+  const now = Date.now();
+  let atTime: number | undefined;
+  if (isFiniteNum(clientTime) && clientTime <= now + 200 && clientTime >= now - LAGCOMP_WINDOW_MS) {
+    atTime = clientTime;
+  }
+
   for (const d of norm) {
     let bestId = -1, bestDist = w.range, bestHead = false;
     for (const [id, a] of room.actors) {
       if (id === shooter.id || a.state.dead) continue;
-      const res = rayHitsPlayer(origin, d, a.state);
-      // Bullets are blocked by walls between shooter and victim.
-      if (res.hit && res.dist < bestDist && !room.world.segmentBlocked(origin, a.state.pos)) {
-        bestDist = res.dist; bestId = id; bestHead = res.head;
-      }
+      const pos = rewindPos(a, atTime);
+      const res = rayHitsPlayer(origin, d, pos);
+      if (!res.hit || res.dist >= bestDist) continue;
+      // LOS check against the actual impact point (so headshots over low cover
+      // aren't blocked by tracing to the target's feet).
+      const aim = { x: origin.x + d.x * res.dist, y: origin.y + d.y * res.dist, z: origin.z + d.z * res.dist };
+      if (room.world.segmentBlocked(origin, aim)) continue;
+      bestDist = res.dist; bestId = id; bestHead = res.head;
     }
-    if (bestId >= 0) applyDamage(room, shooter, room.actors.get(bestId)!, bestHead);
+    if (bestId >= 0) {
+      const at = { x: origin.x + d.x * bestDist, y: origin.y + d.y * bestDist, z: origin.z + d.z * bestDist };
+      applyDamage(room, shooter, room.actors.get(bestId)!, bestHead, { from: origin, at });
+    }
   }
 }
 
@@ -475,17 +635,19 @@ function explodeGrenade(room: Room, p: Projectile) {
     const dist = Math.hypot(c.x - p.pos.x, c.y - p.pos.y, c.z - p.pos.z);
     if (dist > GRENADE.fragRadius) continue;
     if (room.world.segmentBlocked(p.pos, a.state.pos)) continue;
-    const dmg = Math.round(GRENADE.fragDamage * (1 - dist / GRENADE.fragRadius));
+    // Steep falloff: lethal at the epicenter, nearly harmless toward the edge.
+    const dmg = Math.round(GRENADE.fragDamage * Math.pow(1 - dist / GRENADE.fragRadius, 2.5));
+    if (dmg <= 0) continue;
     dealDamage(room, owner, a, dmg, false);
   }
 }
 
-function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean) {
+function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
   const w = weaponOf(attacker);
-  dealDamage(room, attacker, victim, Math.round(w.damage * (head ? w.headshotMul : 1)), head);
+  dealDamage(room, attacker, victim, Math.round(w.damage * (head ? w.headshotMul : 1)), head, shot);
 }
 
-function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean) {
+function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
   if (victim.state.dead) return;
   victim.state.health -= dmg;
   send(victim.ws, { t: "damage", health: Math.max(0, victim.state.health), from: attacker.id });
@@ -495,8 +657,13 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
     victim.state.health = 0;
     victim.state.deaths++;
     attacker.state.kills++;
-    broadcast(room, { t: "kill", killer: attacker.id, victim: victim.id, head });
-    setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
+    broadcast(room, {
+      t: "kill", killer: attacker.id, victim: victim.id, head,
+      ...(shot ? { from: shot.from, at: shot.at } : {}),
+    });
+    if (room.mode !== "bomb") {
+      setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
+    }
   }
 }
 
@@ -509,6 +676,215 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+// --- bomb defusal mode -----------------------------------------------------
+
+function pickTeamSpawn(room: Room, team: "T" | "CT"): Vec3 {
+  const ctSpawns = room.map.spawnsCT ?? [];
+  const spawns =
+    team === "CT"
+      ? (ctSpawns.length ? ctSpawns : room.map.spawns)
+      : (ctSpawns.length
+          ? room.map.spawns.slice(0, room.map.spawns.length - ctSpawns.length)
+          : room.map.spawns);
+  const list = spawns.length ? spawns : room.map.spawns;
+  const s = list[Math.floor(Math.random() * list.length)];
+  return { x: s.x, y: s.y, z: s.z };
+}
+
+function assignBombTeams(room: Room) {
+  const ids = [...room.actors.keys()];
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  room.bombTeams.clear();
+  const half = Math.ceil(ids.length / 2);
+  for (let i = 0; i < ids.length; i++) {
+    room.bombTeams.set(ids[i], i < half ? "T" : "CT");
+  }
+}
+
+function swapBombTeams(room: Room) {
+  for (const [id, team] of room.bombTeams) {
+    room.bombTeams.set(id, team === "T" ? "CT" : "T");
+  }
+}
+
+function startBombRound(room: Room) {
+  room.bombRoundOver = false;
+  room.bombPlanted = false;
+  room.bombPos = null;
+  room.bombDetonatesAt = 0;
+  room.bombPlanterId = -1;
+  room.bombPlanterStart = 0;
+  room.bombDefuserId = -1;
+  room.bombDefuserStart = 0;
+  room.bombRoundEndsAt = Date.now() + BOMB.roundMs;
+  room.projectiles = [];
+  // T bots commit to one site this round so they group up and can plant.
+  room.botTargetSite = Math.floor(Math.random() * Math.max(1, room.map.bombSites?.length ?? 1));
+
+  const players: PlayerState[] = [];
+  for (const a of room.actors.values()) {
+    const team = room.bombTeams.get(a.id) ?? "T";
+    const s = pickTeamSpawn(room, team);
+    a.state.pos = { x: s.x, y: s.y, z: s.z };
+    a.state.health = PLAYER.maxHealth;
+    a.state.dead = false;
+    a.vel = { x: 0, y: 0, z: 0 };
+    a.grounded = false;
+    players.push(a.state);
+  }
+
+  broadcast(room, {
+    t: "bombstart",
+    teams: [...room.bombTeams.entries()].map(([id, team]) => ({ id, team })),
+    roundNum: room.bombRound,
+    scoreT: room.bombScoreT,
+    scoreCT: room.bombScoreCT,
+    roundEndsAt: room.bombRoundEndsAt,
+    players,
+  });
+}
+
+function endBombRound(
+  room: Room,
+  winner: "T" | "CT",
+  reason: "bomb_exploded" | "bomb_defused" | "t_eliminated" | "ct_eliminated" | "time",
+) {
+  if (room.bombRoundOver) return;
+  room.bombRoundOver = true;
+
+  if (winner === "T") room.bombScoreT++;
+  else room.bombScoreCT++;
+
+  broadcast(room, {
+    t: "bombroundend",
+    winner,
+    reason,
+    scoreT: room.bombScoreT,
+    scoreCT: room.bombScoreCT,
+  });
+
+  room.bombRound++;
+
+  const winsNeeded = BOMB.switchAt + 1;
+  if (room.bombScoreT >= winsNeeded || room.bombScoreCT >= winsNeeded || room.bombRound > BOMB.maxRounds) {
+    setTimeout(() => endBombMatch(room), 4000);
+    return;
+  }
+
+  if (room.bombRound === winsNeeded) swapBombTeams(room);
+
+  setTimeout(() => {
+    if (!room.intermission) startBombRound(room);
+  }, 5000);
+}
+
+function endBombMatch(room: Room) {
+  if (room.intermission) return;
+  const winnerName = room.bombScoreT >= room.bombScoreCT ? "T SIDE" : "CT SIDE";
+  room.voteMaps = ["dust2"];
+  room.mapVotes = new Map();
+  room.intermission = true;
+  room.intermissionEndsAt = Date.now() + MATCH.intermissionMs;
+  room.intermissionWinner = winnerName;
+  broadcast(room, {
+    t: "intermission",
+    winnerName,
+    endsAt: room.intermissionEndsAt,
+    mapOptions: [{ id: "dust2", name: MAPS.dust2.name }],
+    scores: [...room.actors.values()].map((a) => a.state),
+  });
+}
+
+function tickBomb(room: Room, now: number) {
+  if (room.bombRoundOver) return;
+
+  // Plant progress: cancel if planter left site or died.
+  if (room.bombPlanterId >= 0) {
+    const planter = room.actors.get(room.bombPlanterId);
+    let stillOnSite = false;
+    if (planter && !planter.state.dead) {
+      for (const site of room.map.bombSites ?? []) {
+        const d = Math.hypot(planter.state.pos.x - site.pos.x, planter.state.pos.z - site.pos.z);
+        if (d <= site.radius) { stillOnSite = true; break; }
+      }
+    }
+    if (!stillOnSite) {
+      broadcast(room, { t: "bombevent", event: "plant_cancel", actorId: room.bombPlanterId });
+      room.bombPlanterId = -1;
+      room.bombPlanterStart = 0;
+      room.bombPos = null;
+    } else if (now - room.bombPlanterStart >= BOMB.plantTime * 1000) {
+      room.bombPlanted = true;
+      room.bombDetonatesAt = now + BOMB.fuseMs;
+      const plantedPos = room.bombPos!;
+      room.bombPlanterId = -1;
+      broadcast(room, { t: "bombevent", event: "planted", pos: plantedPos, detonatesAt: room.bombDetonatesAt });
+    }
+  }
+
+  // Defuse progress: cancel if defuser left bomb or died.
+  if (room.bombDefuserId >= 0 && room.bombPlanted && room.bombPos) {
+    const defuser = room.actors.get(room.bombDefuserId);
+    let stillInRange = false;
+    if (defuser && !defuser.state.dead) {
+      const d = Math.hypot(defuser.state.pos.x - room.bombPos.x, defuser.state.pos.z - room.bombPos.z);
+      stillInRange = d <= BOMB.proximityRadius;
+    }
+    if (!stillInRange) {
+      broadcast(room, { t: "bombevent", event: "defuse_cancel", actorId: room.bombDefuserId });
+      room.bombDefuserId = -1;
+      room.bombDefuserStart = 0;
+    } else if (now - room.bombDefuserStart >= BOMB.defuseTime * 1000) {
+      room.bombPlanted = false;
+      broadcast(room, { t: "bombevent", event: "defused", actorId: room.bombDefuserId });
+      room.bombDefuserId = -1;
+      endBombRound(room, "CT", "bomb_defused");
+      return;
+    }
+  }
+
+  // Detonation.
+  if (room.bombPlanted && now >= room.bombDetonatesAt && room.bombPos) {
+    const pos = room.bombPos;
+    broadcast(room, { t: "bombevent", event: "exploded", pos });
+    for (const a of room.actors.values()) {
+      if (a.state.dead) continue;
+      const dist = Math.hypot(a.state.pos.x - pos.x, a.state.pos.y - pos.y, a.state.pos.z - pos.z);
+      if (dist <= BOMB.explodeRadius) {
+        a.state.health = Math.max(0, a.state.health - BOMB.explodeDamage);
+        send(a.ws, { t: "damage", health: a.state.health, from: 0 });
+        if (a.state.health <= 0) {
+          a.state.dead = true;
+          a.state.deaths++;
+          broadcast(room, { t: "kill", killer: 0, victim: a.id, head: false });
+        }
+      }
+    }
+    endBombRound(room, "T", "bomb_exploded");
+    return;
+  }
+
+  // Round timer.
+  if (!room.bombPlanted && now >= room.bombRoundEndsAt) {
+    endBombRound(room, "CT", "time");
+    return;
+  }
+
+  // Elimination.
+  let aliveT = 0, aliveCT = 0;
+  for (const a of room.actors.values()) {
+    if (a.state.dead) continue;
+    const team = room.bombTeams.get(a.id);
+    if (team === "T") aliveT++;
+    else if (team === "CT") aliveCT++;
+  }
+  if (aliveT === 0) { endBombRound(room, "CT", "t_eliminated"); return; }
+  if (aliveCT === 0) { endBombRound(room, "T", "ct_eliminated"); }
+}
+
 /** End the round: start 15-second intermission with map vote. */
 function endMatch(room: Room) {
   if (room.intermission) return;
@@ -516,18 +892,21 @@ function endMatch(room: Room) {
   for (const a of room.actors.values()) {
     if (!winner || a.state.kills > winner.state.kills) winner = a;
   }
-  const allMaps = Object.keys(MAPS).filter((id) => id !== room.mapId);
-  room.voteMaps = shuffle(allMaps).slice(0, 3);
-  if (room.voteMaps.length === 0) room.voteMaps = [DEFAULT_MAP];
+  // Current map is always the first option so players can vote to replay it.
+  // "custom" is never a key in MAPS, so filtering by id !== room.mapId still
+  // returns all built-in maps when the room is running a custom map.
+  const otherMaps = shuffle(Object.keys(MAPS).filter((id) => id !== room.mapId)).slice(0, 2);
+  room.voteMaps = [room.mapId, ...otherMaps];
   room.mapVotes = new Map();
   room.intermission = true;
   room.intermissionEndsAt = Date.now() + MATCH.intermissionMs;
   room.intermissionWinner = winner ? winner.state.name : "nobody";
+  const mapLabel = (id: string) => id === "custom" ? room.map.name : (MAPS[id]?.name ?? id);
   broadcast(room, {
     t: "intermission",
     winnerName: room.intermissionWinner,
     endsAt: room.intermissionEndsAt,
-    mapOptions: room.voteMaps.map((id) => ({ id, name: MAPS[id].name })),
+    mapOptions: room.voteMaps.map((id) => ({ id, name: mapLabel(id) })),
     scores: [...room.actors.values()].map((a) => a.state),
   });
 }
@@ -543,11 +922,12 @@ function startNextMatch(room: Room) {
     if (cnt > bestVotes) { bestVotes = cnt; nextMapId = id; }
   }
 
-  if (nextMapId !== room.mapId || room.customMap) {
+  if (nextMapId !== room.mapId) {
     room.mapId = nextMapId;
     room.map = MAPS[nextMapId];
     room.customMap = undefined;
     room.world = new CollisionWorld(room.map);
+    room.nav = new NavGrid(room.world, room.map.bounds);
   }
 
   room.intermission = false;
@@ -573,8 +953,25 @@ function startNextMatch(room: Room) {
     t: "matchrestart",
     mapId: room.mapId,
     matchEndsAt: room.matchEndsAt,
+    ...(room.customMap ? { mapData: room.customMap } : {}),
     players: [...room.actors.values()].map((a) => a.state),
   });
+
+  if (room.mode === "bomb") {
+    room.bombRound = 1;
+    room.bombScoreT = 0;
+    room.bombScoreCT = 0;
+    room.bombPlanted = false;
+    room.bombPos = null;
+    room.bombDetonatesAt = 0;
+    room.bombRoundOver = false;
+    room.bombPlanterId = -1;
+    room.bombPlanterStart = 0;
+    room.bombDefuserId = -1;
+    room.bombDefuserStart = 0;
+    assignBombTeams(room);
+    startBombRound(room);
+  }
 }
 
 function respawn(room: Room, a: Actor) {
@@ -594,28 +991,32 @@ function respawn(room: Room, a: Actor) {
 
 // --- bots ------------------------------------------------------------------
 
-function randomPoint(room: Room): Vec3 {
-  const b = room.map.bounds - 4;
-  return { x: (Math.random() * 2 - 1) * b, y: 0, z: (Math.random() * 2 - 1) * b };
-}
-
 function spawnBot(room: Room) {
   const id = nextId++;
   const name = BOT_NAMES[(id - 1) % BOT_NAMES.length];
   const now = Date.now();
   const state = makeState(room, id, name);
-  // Bots roll a random loadout: AK, sniper, or shotgun.
   const roll = Math.random();
   state.weapon = roll < 0.3 ? "sniper" : roll < 0.5 ? "shotgun" : "ak";
+  // Bots get random classes; weight toward classes with server-side abilities.
+  state.cls = CLASS_IDS[Math.floor(Math.random() * CLASS_IDS.length)];
+  const persona = botBehaviorFor(state.weapon);
   room.actors.set(id, {
     id, ws: null, state,
     vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-    nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {},
+    nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [],
     ai: {
-      waypoint: randomPoint(room), repathAt: now + 2000,
-      nextJumpAt: now + 500, targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
+      goal: null, pathGoal: null, path: [], pathIdx: 0, repathAt: 0,
+      targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
       sliding: false, slideTime: 0, jumpsUsed: 0,
       ammo: (WEAPONS[state.weapon] ?? WEAPONS[DEFAULT_WEAPON]).magazine, reloadUntil: 0,
+      strafeDir: Math.random() < 0.5 ? 1 : -1, strafeUntil: 0,
+      stuckAt: now + 1000, stuckX: state.pos.x, stuckZ: state.pos.z,
+      weaponSwitchAt: now + rng(25_000, 50_000),
+      abilityFAt: now + rng(5_000, 15_000),
+      abilityCAt: now + rng(7_000, 18_000),
+      bombSiteIdx: Math.random() < 0.5 ? 0 : 1,
+      behavior: persona.behavior, bhop: persona.bhop, campSpot: null, campUntil: 0,
     },
   });
 }
@@ -635,15 +1036,21 @@ const rng = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   const ai = bot.ai!;
   if (bot.state.dead) return;
+  if (room.mode === "bomb" && room.bombRoundOver) return;
   const me = bot.state;
   const diff = BOT_DIFF[room.difficulty];
 
-  // Target acquisition: nearest visible enemy within difficulty range.
+  // === TARGET ACQUISITION ===
   if (now >= ai.retargetAt) {
-    ai.retargetAt = now + 400;
+    ai.retargetAt = now + 350;
     let bestId = -1, bestDist = Infinity;
     for (const [id, a] of room.actors) {
       if (id === bot.id || a.state.dead) continue;
+      if (room.mode === "bomb") {
+        const myTeam = room.bombTeams.get(bot.id);
+        const theirTeam = room.bombTeams.get(id);
+        if (myTeam && theirTeam && myTeam === theirTeam) continue;
+      }
       const dist = Math.hypot(a.state.pos.x - me.pos.x, a.state.pos.z - me.pos.z);
       if (dist > diff.range) continue;
       if (room.world.segmentBlocked(eye(me), chest(a.state))) continue;
@@ -659,50 +1066,150 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   const targetVisible =
     !!target && !target.state.dead && !room.world.segmentBlocked(eye(me), chest(target.state));
 
-  // Aim toward target (smoothed by difficulty).
+  // === AIM TOWARD TARGET ===
+  // Yaw convention: yaw=0 means model looks in -Z (same as local player camera at yaw=0).
+  // We use atan2(-dx,-dz) so that the server yaw matches the client's rendering convention.
   if (target && targetVisible) {
     const t = chest(target.state), o = eye(me);
     const dx = t.x - o.x, dy = t.y - o.y, dz = t.z - o.z;
     const flat = Math.hypot(dx, dz);
-    me.yaw = lerpAngleTo(me.yaw, Math.atan2(dx, dz), diff.aimLerp);
+    me.yaw = lerpAngleTo(me.yaw, Math.atan2(-dx, -dz), diff.aimLerp);
     me.pitch += (Math.atan2(dy, flat) - me.pitch) * diff.aimLerp;
   }
 
-  // Movement: chase/strafe around target, else wander; repath when arrived/stuck.
-  const dxw = ai.waypoint.x - me.pos.x, dzw = ai.waypoint.z - me.pos.z;
-  const wpDist = Math.hypot(dxw, dzw);
-  if (now >= ai.repathAt || wpDist < 2) {
-    ai.repathAt = now + rng(1500, 3000);
-    if (target && Math.random() < 0.6) {
-      const a = Math.atan2(target.state.pos.z - me.pos.z, target.state.pos.x - me.pos.x);
-      const side = Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
-      const r = rng(8, 16);
-      ai.waypoint = {
-        x: clamp(target.state.pos.x + Math.cos(a + side) * r, -room.map.bounds + 3, room.map.bounds - 3),
-        y: 0,
-        z: clamp(target.state.pos.z + Math.sin(a + side) * r, -room.map.bounds + 3, room.map.bounds - 3),
-      };
+  // === DECIDE GOAL + IMMEDIATE BOMB ACTIONS ===
+  const bombTeam = room.mode === "bomb" ? (room.bombTeams.get(bot.id) ?? null) : null;
+  const isPlanter = bombTeam === "T" && room.bombPlanterId === bot.id;
+  const isDefuser = bombTeam === "CT" && room.bombDefuserId === bot.id;
+  const sites = room.map.bombSites ?? [];
+  let goal: Vec3 | null = ai.goal;
+
+  if (bombTeam === "T") {
+    if (!room.bombPlanted) {
+      const site = sites[room.botTargetSite % Math.max(1, sites.length)];
+      if (site) {
+        goal = { x: site.pos.x, y: 0, z: site.pos.z };
+        const d = Math.hypot(me.pos.x - site.pos.x, me.pos.z - site.pos.z);
+        // Begin the plant once we're inside the site and nobody else is planting.
+        if (d <= site.radius - 1 && room.bombPlanterId === -1) {
+          room.bombPlanterId = bot.id;
+          room.bombPlanterStart = now;
+          room.bombPos = { x: site.pos.x, y: site.pos.y, z: site.pos.z };
+          broadcast(room, { t: "bombevent", event: "planting", pos: room.bombPos, actorId: bot.id });
+        }
+      }
+    } else if (room.bombPos) {
+      // Guard: hold a spot near the planted bomb, re-pick when reached.
+      if (!ai.goal || Math.hypot(me.pos.x - ai.goal.x, me.pos.z - ai.goal.z) < 3) {
+        goal = { x: room.bombPos.x + rng(-6, 6), y: 0, z: room.bombPos.z + rng(-6, 6) };
+      }
+    }
+  } else if (bombTeam === "CT") {
+    if (room.bombPlanted && room.bombPos) {
+      goal = { x: room.bombPos.x, y: 0, z: room.bombPos.z };
+      const d = Math.hypot(me.pos.x - room.bombPos.x, me.pos.z - room.bombPos.z);
+      if (d <= BOMB.proximityRadius - 0.5 && room.bombDefuserId === -1) {
+        room.bombDefuserId = bot.id;
+        room.bombDefuserStart = now;
+        broadcast(room, { t: "bombevent", event: "defusing", actorId: bot.id });
+      }
     } else {
-      ai.waypoint = randomPoint(room);
+      // Patrol toward an assigned site; occasionally rotate to the other.
+      if (now >= ai.repathAt && sites.length > 1 && Math.random() < 0.2) ai.bombSiteIdx ^= 1;
+      const site = sites[ai.bombSiteIdx % Math.max(1, sites.length)];
+      if (site && (!ai.goal || Math.hypot(me.pos.x - ai.goal.x, me.pos.z - ai.goal.z) < 4)) {
+        goal = { x: site.pos.x + rng(-7, 7), y: 0, z: site.pos.z + rng(-7, 7) };
+      }
+    }
+  } else if (ai.behavior === "camp") {
+    // Campers hold a spot and snipe; they re-pick a new spot after holding it.
+    if (!ai.campSpot) { ai.campSpot = room.nav.randomPoint(); ai.campUntil = 0; }
+    const reached = Math.hypot(me.pos.x - ai.campSpot.x, me.pos.z - ai.campSpot.z) < 2.5;
+    if (reached && ai.campUntil === 0) ai.campUntil = now + rng(5_000, 11_000);
+    if (ai.campUntil !== 0 && now >= ai.campUntil) { ai.campSpot = room.nav.randomPoint(); ai.campUntil = 0; }
+    goal = ai.campSpot;
+  } else {
+    // FFA rushers/roamers: hunt the current target, else wander.
+    if (target) {
+      goal = { x: target.state.pos.x, y: 0, z: target.state.pos.z };
+    } else if (!ai.goal || Math.hypot(me.pos.x - ai.goal.x, me.pos.z - ai.goal.z) < 3) {
+      goal = room.nav.randomPoint();
     }
   }
+  ai.goal = goal;
 
+  // === MOVEMENT ===
   let wishX = 0, wishZ = 0;
-  if (wpDist > 0.001) { wishX = dxw / wpDist; wishZ = dzw / wpDist; }
+  const frozen = isPlanter || isDefuser;
+  const targetDist = target ? Math.hypot(target.state.pos.x - me.pos.x, target.state.pos.z - me.pos.z) : Infinity;
+  const combat = !frozen && !!target && targetVisible && targetDist < 26;
 
-  let jump = false;
-  if (bot.grounded && now >= ai.nextJumpAt) {
-    jump = true;
-    ai.nextJumpAt = now + rng(90, 210);
+  if (frozen) {
+    // Stand still on the bomb so the plant/defuse can't be cancelled by drifting.
+  } else if (combat) {
+    const tx = target!.state.pos.x - me.pos.x, tz = target!.state.pos.z - me.pos.z;
+    const dl = Math.hypot(tx, tz) || 1;
+    const fx = tx / dl, fz = tz / dl;
+    if (now >= ai.strafeUntil) {
+      ai.strafeDir = Math.random() < 0.5 ? 1 : -1;
+      ai.strafeUntil = now + rng(450, 1100);
+    }
+    if (ai.behavior === "camp") {
+      // Hold the angle and shoot; only give ground if the enemy closes in.
+      if (targetDist < 9) { wishX = -fx; wishZ = -fz; } // kite back
+      // else stand still (wish stays 0) for an accurate shot.
+    } else {
+      // Rushers crowd in close (shotgun range); roamers keep a mid distance.
+      let mx = -fz * ai.strafeDir, mz = fx * ai.strafeDir;
+      const near = ai.behavior === "rush" ? 5 : 7;
+      const far = ai.behavior === "rush" ? 10 : 16;
+      if (targetDist > far) { mx += fx * 1.3; mz += fz * 1.3; }   // close the gap
+      else if (targetDist < near) { mx -= fx; mz -= fz; }         // back off if crowded
+      const ml = Math.hypot(mx, mz) || 1;
+      wishX = mx / ml; wishZ = mz / ml;
+    }
+  } else if (goal) {
+    // Follow the A* path toward the goal; repath periodically / when goal moves.
+    const goalMoved = ai.pathGoal ? Math.hypot(goal.x - ai.pathGoal.x, goal.z - ai.pathGoal.z) : Infinity;
+    if (now >= ai.repathAt || ai.path.length === 0 || goalMoved > 4) {
+      ai.path = room.nav.findPath(me.pos, goal) ?? [];
+      ai.pathIdx = 0;
+      ai.pathGoal = { x: goal.x, y: 0, z: goal.z };
+      ai.repathAt = now + rng(600, 1200);
+    }
+    while (
+      ai.pathIdx < ai.path.length &&
+      Math.hypot(ai.path[ai.pathIdx].x - me.pos.x, ai.path[ai.pathIdx].z - me.pos.z) < 1.6
+    ) ai.pathIdx++;
+    const node = ai.path[ai.pathIdx] ?? goal;
+    const dx = node.x - me.pos.x, dz = node.z - me.pos.z;
+    const dl = Math.hypot(dx, dz);
+    if (dl > 0.001) { wishX = dx / dl; wishZ = dz / dl; }
   }
 
-  if (!targetVisible && wpDist > 0.001) me.yaw = Math.atan2(wishX, wishZ);
+  const moving = wishX !== 0 || wishZ !== 0;
 
+  // === BHOP / RUN ===
+  // Run on the ground to build speed first, then (for bhop bots) hold jump to
+  // auto-hop and keep that momentum. Jumping from a standstill just bounces in
+  // place (air accel is capped), so we gate it on having real speed.
+  const speed = Math.hypot(bot.vel.x, bot.vel.z);
+  const jump = moving && !frozen && ai.bhop && speed > BHOP_MIN_SPEED;
+
+  // === BODY FACING ===
+  if (frozen && target) {
+    const dx = target.state.pos.x - me.pos.x, dz = target.state.pos.z - me.pos.z;
+    me.yaw = Math.atan2(-dx, -dz);
+  } else if (!targetVisible && moving) {
+    me.yaw = Math.atan2(-wishX, -wishZ);
+  }
+
+  // === STEP MOVEMENT ===
   const moveState = {
     pos: me.pos, vel: bot.vel, grounded: bot.grounded,
     sliding: ai.sliding, slideTime: ai.slideTime, jumpsUsed: ai.jumpsUsed,
   };
-  const res = stepMovement(
+  stepMovement(
     moveState,
     {
       wishX, wishZ, wishSpeed: MOVE.speed,
@@ -715,21 +1222,70 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   ai.sliding = moveState.sliding;
   ai.slideTime = moveState.slideTime;
   ai.jumpsUsed = moveState.jumpsUsed;
-  // Stuck against a wall → repath soon (to a random nearby point to escape).
-  if (res.hitWall && now + 300 < ai.repathAt) {
-    ai.repathAt = now + 300;
-    if (Math.random() < 0.5) ai.waypoint = randomPoint(room);
-  }
-  if (me.pos.y < -10) respawn(room, bot);
 
-  // Shooting (with a real magazine + reload downtime).
+  // === STUCK DETECTION === force a fresh path if we've barely moved.
+  if (now >= ai.stuckAt) {
+    const moved = Math.hypot(me.pos.x - ai.stuckX, me.pos.z - ai.stuckZ);
+    if (!frozen && !combat && moving && moved < 0.7) {
+      ai.repathAt = 0;     // repath next tick
+      ai.path = [];
+    }
+    ai.stuckX = me.pos.x; ai.stuckZ = me.pos.z; ai.stuckAt = now + 500;
+  }
+
+  if (me.pos.y < -10) {
+    if (room.mode === "bomb") {
+      bot.state.dead = true;
+      bot.state.health = 0;
+      bot.state.deaths++;
+      broadcast(room, { t: "kill", killer: bot.id, victim: bot.id, head: false });
+    } else {
+      respawn(room, bot);
+    }
+  }
+
+  // === ABILITIES ===
+  if (now >= ai.abilityFAt) {
+    const cls = CLASSES[me.cls] ?? CLASSES[DEFAULT_CLASS];
+    if (cls.F) {
+      const fwd = { x: -Math.sin(me.yaw), y: 0.2, z: -Math.cos(me.yaw) };
+      handleAbility(room, bot, cls.F, eye(me), fwd);
+    }
+    ai.abilityFAt = now + rng(8_000, 20_000);
+  }
+  if (now >= ai.abilityCAt) {
+    const cls = CLASSES[me.cls] ?? CLASSES[DEFAULT_CLASS];
+    if (cls.C) {
+      const fwd = { x: -Math.sin(me.yaw), y: 0.4, z: -Math.cos(me.yaw) };
+      handleAbility(room, bot, cls.C, eye(me), fwd);
+    }
+    ai.abilityCAt = now + rng(10_000, 25_000);
+  }
+
+  // === WEAPON SWITCHING === (re-roll personality to suit the new weapon)
+  if (now >= ai.weaponSwitchAt) {
+    const others = LOADOUT_WEAPONS.filter((w) => w !== me.weapon);
+    if (others.length > 0) {
+      me.weapon = others[Math.floor(Math.random() * others.length)];
+      ai.ammo = weaponOf(bot).magazine;
+      ai.reloadUntil = 0;
+      const persona = botBehaviorFor(me.weapon);
+      ai.behavior = persona.behavior;
+      ai.bhop = persona.bhop;
+      ai.campSpot = null;
+    }
+    ai.weaponSwitchAt = now + rng(25_000, 50_000);
+  }
+
+  // === SHOOTING (aimDot sign fixed to match new yaw convention) ===
   if (target && targetVisible && now >= ai.reactAt && now >= ai.nextShotAt && now >= ai.reloadUntil) {
     const w = weaponOf(bot);
     const o = eye(me), t = chest(target.state);
     let dx = t.x - o.x, dy = t.y - o.y, dz = t.z - o.z;
     const l = Math.hypot(dx, dy, dz) || 1;
     dx /= l; dy /= l; dz /= l;
-    const aimDot = dx * Math.sin(me.yaw) + dz * Math.cos(me.yaw);
+    // Negate because yaw now uses atan2(-dx,-dz), so forward = (-sin(yaw), -cos(yaw)).
+    const aimDot = -(dx * Math.sin(me.yaw) + dz * Math.cos(me.yaw));
     const sniper = w.id === "sniper";
     const spread = diff.spread + (sniper ? 0.04 : w.id === "shotgun" ? 0.07 : 0);
     if (aimDot > (sniper ? 0.985 : 0.96)) {
@@ -745,7 +1301,6 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
       handleShoot(room, bot, o, shotDirs, !!w.melee);
       ai.ammo--;
       if (w.magazine > 0 && ai.ammo <= 0) {
-        // Empty the mag → forced reload downtime, just like a player.
         ai.reloadUntil = now + w.reloadMs;
         ai.ammo = w.magazine;
       } else {
@@ -769,7 +1324,7 @@ wss.on("connection", (ws) => {
     const now = Date.now();
     actor = {
       id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-      nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {},
+      nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [],
     };
     room = target;
     target.actors.set(id, actor);
@@ -784,13 +1339,35 @@ wss.on("connection", (ws) => {
         t: "intermission",
         winnerName: target.intermissionWinner,
         endsAt: target.intermissionEndsAt,
-        mapOptions: target.voteMaps.map((mid) => ({ id: mid, name: MAPS[mid].name })),
+        mapOptions: target.voteMaps.map((mid) => ({ id: mid, name: mid === "custom" ? target.map.name : (MAPS[mid]?.name ?? mid) })),
         scores: [...target.actors.values()].map((a) => a.state),
       });
       const votes: Record<string, number> = {};
       for (const mid of target.voteMaps) votes[mid] = 0;
       for (const v of target.mapVotes.values()) votes[v] = (votes[v] ?? 0) + 1;
       send(ws, { t: "voteupdate", votes });
+    } else if (target.mode === "bomb") {
+      // Balance teams for the joining player.
+      const ctCount = [...target.bombTeams.values()].filter((t) => t === "CT").length;
+      const tCount = target.bombTeams.size - ctCount;
+      target.bombTeams.set(id, tCount <= ctCount ? "T" : "CT");
+      actor.state.dead = true;
+      // If this is the first real player, kick off the first round now.
+      if (realCount(target) === 1 && target.bombRoundEndsAt === 0) {
+        startBombRound(target);
+      }
+      send(ws, {
+        t: "bombstart",
+        teams: [...target.bombTeams.entries()].map(([pid, team]) => ({ id: pid, team })),
+        roundNum: target.bombRound,
+        scoreT: target.bombScoreT,
+        scoreCT: target.bombScoreCT,
+        roundEndsAt: target.bombRoundEndsAt,
+        players: [...target.actors.values()].map((a) => a.state),
+      });
+      if (target.bombPlanted && target.bombPos) {
+        send(ws, { t: "bombevent", event: "planted", pos: target.bombPos, detonatesAt: target.bombDetonatesAt });
+      }
     }
     broadcast(target, { t: "pjoin", player: state }, id);
     console.log(`+ ${state.name} (#${id}) -> ${target.name} (${realCount(target)} players)`);
@@ -849,10 +1426,12 @@ wss.on("connection", (ws) => {
         };
         actor.state.yaw = msg.yaw;
         actor.state.pitch = clamp(msg.pitch, -Math.PI, Math.PI);
+        actor.state.posture = msg.posture === 1 || msg.posture === 2 ? msg.posture : 0;
         break;
       }
       case "shoot": {
         if (actor.state.dead || room.intermission) break;
+        if (room.mode === "bomb" && room.bombRoundOver) break;
         if (!validVec(msg.origin) || !Array.isArray(msg.dirs)) break;
         const w = weaponOf(actor);
         const now = Date.now();
@@ -862,7 +1441,7 @@ wss.on("connection", (ws) => {
         actor.nextShot = now + cycle;
         const maxDirs = Math.max(1, w.pellets ?? 1);
         const dirs = msg.dirs.filter(validVec).slice(0, maxDirs);
-        handleShoot(room, actor, msg.origin, dirs, !!msg.melee);
+        handleShoot(room, actor, msg.origin, dirs, !!msg.melee, msg.clientTime);
         break;
       }
       case "respawn":
@@ -876,7 +1455,8 @@ wss.on("connection", (ws) => {
           self.state.health = 0;
           self.state.deaths++;
           broadcast(rm, { t: "kill", killer: self.id, victim: self.id, head: false });
-          setTimeout(() => respawn(rm, self), PLAYER.respawnDelayMs);
+          // In bomb mode you stay dead until the next round (no mid-round respawn).
+          if (rm.mode !== "bomb") setTimeout(() => respawn(rm, self), PLAYER.respawnDelayMs);
         }
         break;
       }
@@ -884,12 +1464,57 @@ wss.on("connection", (ws) => {
         // Players may only switch to loadout weapons or the always-available katana.
         if (WEAPONS[msg.weapon] && (LOADOUT_WEAPONS.includes(msg.weapon) || msg.weapon === "katana")) {
           actor.state.weapon = msg.weapon;
+          // Enforce the equip delay before the new weapon can fire.
+          actor.nextShot = Math.max(actor.nextShot, Date.now() + WEAPON_SWITCH_MS);
         }
         break;
       case "ability":
-        if (!room.intermission && typeof msg.ability === "string")
+        if (!room.intermission && !(room.mode === "bomb" && room.bombRoundOver) && typeof msg.ability === "string")
           handleAbility(room, actor, msg.ability, msg.origin, msg.dir);
         break;
+      case "use": {
+        if (room.mode !== "bomb" || actor.state.dead || room.bombRoundOver) break;
+        if (!room.map.bombSites) break;
+        const team = room.bombTeams.get(actor.id);
+        const useNow = Date.now();
+        const pos = actor.state.pos;
+
+        if (msg.held) {
+          if (team === "T" && !room.bombPlanted && room.bombPlanterId === -1) {
+            for (const site of room.map.bombSites) {
+              const d = Math.hypot(pos.x - site.pos.x, pos.z - site.pos.z);
+              if (d <= site.radius) {
+                room.bombPlanterId = actor.id;
+                room.bombPlanterStart = useNow;
+                room.bombPos = site.pos;
+                broadcast(room, { t: "bombevent", event: "planting", pos: site.pos, actorId: actor.id });
+                break;
+              }
+            }
+          }
+          if (team === "CT" && room.bombPlanted && room.bombPos && room.bombDefuserId === -1) {
+            const d = Math.hypot(pos.x - room.bombPos.x, pos.z - room.bombPos.z);
+            if (d <= BOMB.proximityRadius) {
+              room.bombDefuserId = actor.id;
+              room.bombDefuserStart = useNow;
+              broadcast(room, { t: "bombevent", event: "defusing", actorId: actor.id });
+            }
+          }
+        } else {
+          if (room.bombPlanterId === actor.id) {
+            room.bombPlanterId = -1;
+            room.bombPlanterStart = 0;
+            if (!room.bombPlanted) room.bombPos = null;
+            broadcast(room, { t: "bombevent", event: "plant_cancel", actorId: actor.id });
+          }
+          if (room.bombDefuserId === actor.id) {
+            room.bombDefuserId = -1;
+            room.bombDefuserStart = 0;
+            broadcast(room, { t: "bombevent", event: "defuse_cancel", actorId: actor.id });
+          }
+        }
+        break;
+      }
       case "vote":
         if (room.intermission && room.voteMaps.includes(msg.mapId)) {
           room.mapVotes.set(actor.id, msg.mapId);
@@ -923,6 +1548,10 @@ setInterval(() => {
   for (const room of rooms.values()) {
     if (room.intermission) {
       if (now >= room.intermissionEndsAt) startNextMatch(room);
+    } else if (room.mode === "bomb") {
+      tickBomb(room, now);
+      for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
+      if (room.projectiles.length) updateProjectiles(room, now, dt);
     } else {
       if (now >= room.matchEndsAt) endMatch(room);
       for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
@@ -934,10 +1563,19 @@ setInterval(() => {
 setInterval(() => {
   for (const room of rooms.values()) {
     if (realCount(room) === 0) continue;
+    const time = Date.now();
+    // Record each actor's position at this snapshot's timestamp so shots can be
+    // rewound to exactly the world state a client interpolated against.
+    for (const a of room.actors.values()) {
+      const h = a.posHistory;
+      h.push({ t: time, x: a.state.pos.x, y: a.state.pos.y, z: a.state.pos.z });
+      const cutoff = time - LAGCOMP_WINDOW_MS;
+      while (h.length > 1 && h[0].t < cutoff) h.shift();
+    }
     const proj: ProjectileState[] = room.projectiles.map((p) => ({ id: p.id, kind: p.kind, pos: p.pos }));
     broadcast(room, {
       t: "snapshot",
-      time: Date.now(),
+      time,
       players: [...room.actors.values()].map((a) => a.state),
       proj: proj.length ? proj : undefined,
     });

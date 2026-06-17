@@ -8,6 +8,7 @@ import {
   CLASSES,
   ABILITIES,
   DEFAULT_CLASS,
+  BOMB,
   INVIS,
   UPDRAFT,
   GRENADE,
@@ -18,6 +19,9 @@ import {
   type S_Welcome,
   type S_Intermission,
   type S_MatchRestart,
+  type S_BombRoundStart,
+  type S_BombEvent,
+  type S_BombRoundEnd,
   type ServerMessage,
 } from "@drunkr/shared";
 import { Renderer } from "../render/Renderer.js";
@@ -74,6 +78,32 @@ export class Game {
   private projMeshes = new Map<number, THREE.Mesh>();
   private losRay = new THREE.Raycaster();
   private footstepTimer = 0;
+  private reloadSoundFired = false;
+  /** Death-cam: line + muzzle marker showing where the lethal shot came from. */
+  private deathTracer: THREE.Group | null = null;
+
+  // Bomb defusal mode state.
+  private inBombMode = false;
+  private bombTeam: "T" | "CT" | null = null;
+  private bombRoundNum = 0;
+  private bombScoreT = 0;
+  private bombScoreCT = 0;
+  private bombRoundEndsAt = 0;
+  private bombPlanted = false;
+  private bombPos: THREE.Vector3 | null = null;
+  private bombDetonatesAt = 0;
+  private lastUseHeld = false;
+  private bombTickTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Bomb HUD refs.
+  private bombHudEl = document.getElementById("bomb-hud")!;
+  private bombTeamEl = document.getElementById("bomb-team")!;
+  private bombScoreEl = document.getElementById("bomb-score")!;
+  private bombTimerEl = document.getElementById("bomb-timer")!;
+  private bombPromptEl = document.getElementById("bomb-prompt")!;
+  private bombRoundEndEl = document.getElementById("bomb-round-end")!;
+  private bombRoundResultEl = document.getElementById("bomb-round-result")!;
+  private bombRoundScoreEl = document.getElementById("bomb-round-score")!;
 
   // Intermission overlay refs.
   private interEl = document.getElementById("inter")!;
@@ -118,10 +148,15 @@ export class Game {
       this.local,
       {
         onAmmo: (cur, max) => this.hud.setAmmo(cur, max),
-        onHit: (head) => this.hud.hitmark(head),
+        onHit: (head) => { this.hud.hitmark(head); this.sfx.hit(head); },
         onReloadState: (active, progress) => {
           this.hud.setReload(active, progress);
-          if (active && progress < 0.05) this.sfx.reload(this.weapon.def.id);
+          if (!active) {
+            this.reloadSoundFired = false;
+          } else if (!this.reloadSoundFired) {
+            this.reloadSoundFired = true;
+            this.sfx.reload(this.weapon.def.id);
+          }
         },
         onWeapon: (name) => this.hud.setWeapon(name),
         onScope: (active) => this.hud.setScope(active),
@@ -282,9 +317,15 @@ export class Game {
         if (msg.killer === this.localId) this.sfx.kill();
         if (msg.victim === this.localId) {
           this.local.dead = true;
+          this.resetAbilityCooldowns();
           this.hud.setDead(true);
           this.sfx.death();
-          this.showPauseMenu(true);
+          if (msg.from && msg.at) {
+            this.showDeathTracer(
+              new THREE.Vector3(msg.from.x, msg.from.y, msg.from.z),
+              new THREE.Vector3(msg.at.x, msg.at.y, msg.at.z),
+            );
+          }
         }
         break;
       }
@@ -327,13 +368,18 @@ export class Game {
           this.fellSent = false;
           this.hud.setDead(false);
           this.hud.setHealth(msg.health);
-          this.weapon.resetAmmo(); // respawn with fresh mags
-          // If pause menu is open (death state), switch it to PAUSED so player
-          // can choose when to resume instead of being force-relocked.
-          if (!this.pauseMenu.classList.contains("hidden")) {
-            this.showPauseMenu(false);
-          }
+          this.weapon.resetAmmo();
+          this.clearDeathTracer();
         }
+        break;
+      case "bombstart":
+        this.onBombRoundStart(msg);
+        break;
+      case "bombevent":
+        this.onBombEvent(msg);
+        break;
+      case "bombroundend":
+        this.onBombRoundEnd(msg);
         break;
     }
   }
@@ -384,6 +430,14 @@ export class Game {
     this.inIntermission = false;
     this.interEl.classList.add("hidden");
     this.matchEndsAt = msg.matchEndsAt;
+    // Reset bomb state on map restart (bombstart follows right after in bomb mode).
+    this.stopBombTick();
+    this.bombPlanted = false;
+    this.bombPos = null;
+    this.bombDetonatesAt = 0;
+    this.bombTimerEl.classList.add("hidden");
+    this.bombRoundEndEl.classList.add("hidden");
+    this.bombPromptEl.classList.add("hidden");
 
     const map = msg.mapData ?? MAPS[msg.mapId] ?? MAPS.neon_yard;
     if (msg.mapId !== this.currentMapId || msg.mapData) {
@@ -423,7 +477,182 @@ export class Game {
         this.remotes.add(p);
       }
     }
+    this.clearDeathTracer();
     this.input.requestLock();
+  }
+
+  // ---- Bomb defusal mode ---------------------------------------------------
+
+  private onBombRoundStart(msg: S_BombRoundStart) {
+    this.inBombMode = true;
+    const myEntry = msg.teams.find((t) => t.id === this.localId);
+    this.bombTeam = myEntry?.team ?? null;
+    this.bombRoundNum = msg.roundNum;
+    this.bombScoreT = msg.scoreT;
+    this.bombScoreCT = msg.scoreCT;
+    this.bombRoundEndsAt = msg.roundEndsAt;
+    this.bombPlanted = false;
+    this.bombPos = null;
+    this.bombDetonatesAt = 0;
+    this.lastUseHeld = false;
+    this.stopBombTick();
+    this.bombTimerEl.classList.add("hidden");
+    this.bombPromptEl.classList.add("hidden");
+    this.bombRoundEndEl.classList.add("hidden");
+    this.bombHudEl.classList.remove("hidden");
+    this.updateBombTeamHud();
+
+    this.roster.clear();
+    this.remotes.clear();
+    for (const p of msg.players) {
+      this.roster.set(p.id, p);
+      if (p.id === this.localId) {
+        this.local.spawn(p.pos.x, p.pos.y, p.pos.z);
+        this.local.dead = false;
+        this.fellSent = false;
+        this.hud.setDead(false);
+        this.hud.setHealth(p.health);
+        this.weapon.resetAmmo();
+      } else {
+        this.remotes.add(p);
+      }
+    }
+    this.clearDeathTracer();
+    this.input.requestLock();
+  }
+
+  private onBombEvent(msg: S_BombEvent) {
+    switch (msg.event) {
+      case "planting":
+        if (msg.actorId === this.localId) {
+          this.bombPromptEl.textContent = "PLANTING… HOLD [E]";
+          this.bombPromptEl.classList.remove("hidden");
+        }
+        break;
+      case "plant_cancel":
+        if (msg.actorId === this.localId) {
+          this.bombPromptEl.classList.add("hidden");
+        }
+        break;
+      case "planted":
+        this.bombPlanted = true;
+        this.bombPos = msg.pos ? new THREE.Vector3(msg.pos.x, msg.pos.y, msg.pos.z) : null;
+        this.bombDetonatesAt = msg.detonatesAt ?? 0;
+        this.sfx.bombPlanted();
+        this.bombTimerEl.classList.remove("hidden");
+        this.bombPromptEl.classList.add("hidden");
+        this.startBombTick();
+        break;
+      case "defusing":
+        if (msg.actorId === this.localId) {
+          this.bombPromptEl.textContent = "DEFUSING… HOLD [E]";
+          this.bombPromptEl.classList.remove("hidden");
+        }
+        break;
+      case "defuse_cancel":
+        if (msg.actorId === this.localId) {
+          this.bombPromptEl.classList.add("hidden");
+        }
+        break;
+      case "defused":
+        this.sfx.bombDefused();
+        this.bombPlanted = false;
+        this.bombPos = null;
+        this.bombTimerEl.classList.add("hidden");
+        this.bombPromptEl.classList.add("hidden");
+        this.stopBombTick();
+        break;
+      case "exploded":
+        this.stopBombTick();
+        this.bombTimerEl.classList.add("hidden");
+        this.bombPromptEl.classList.add("hidden");
+        if (msg.pos) {
+          const ep = new THREE.Vector3(msg.pos.x, msg.pos.y, msg.pos.z);
+          this.onExplosion("frag", ep);
+        }
+        break;
+    }
+  }
+
+  private onBombRoundEnd(msg: S_BombRoundEnd) {
+    this.bombScoreT = msg.scoreT;
+    this.bombScoreCT = msg.scoreCT;
+    this.stopBombTick();
+    this.bombTimerEl.classList.add("hidden");
+    this.bombPromptEl.classList.add("hidden");
+    this.updateBombTeamHud();
+
+    const reasonText: Record<string, string> = {
+      bomb_exploded: "BOMB EXPLODED",
+      bomb_defused: "BOMB DEFUSED",
+      t_eliminated: "T ELIMINATED",
+      ct_eliminated: "CT ELIMINATED",
+      time: "TIME OVER",
+    };
+    this.bombRoundResultEl.textContent = `${msg.winner} WIN · ${reasonText[msg.reason] ?? ""}`;
+    this.bombRoundResultEl.className = msg.winner === "T" ? "t-win" : "ct-win";
+    this.bombRoundScoreEl.textContent = `T  ${msg.scoreT}  :  ${msg.scoreCT}  CT`;
+    this.bombRoundEndEl.classList.remove("hidden");
+  }
+
+  private updateBombTeamHud() {
+    this.bombTeamEl.textContent = this.bombTeam === "T" ? "TERRORIST" : "COUNTER-TERRORIST";
+    this.bombTeamEl.className = this.bombTeam === "T" ? "t-side" : "ct-side";
+    this.bombScoreEl.textContent = `T  ${this.bombScoreT}  :  ${this.bombScoreCT}  CT`;
+  }
+
+  private startBombTick() {
+    this.stopBombTick();
+    const schedule = () => {
+      if (!this.bombPlanted) return;
+      const rem = this.bombDetonatesAt - Date.now();
+      if (rem <= 0) return;
+      this.sfx.bombTick();
+      const interval = rem < 5000 ? 180 : rem < 10000 ? 350 : rem < 20000 ? 650 : 1000;
+      this.bombTickTimer = setTimeout(schedule, interval);
+    };
+    schedule();
+  }
+
+  private stopBombTick() {
+    if (this.bombTickTimer !== null) {
+      clearTimeout(this.bombTickTimer);
+      this.bombTickTimer = null;
+    }
+  }
+
+  private updateBombPrompt() {
+    if (!this.inBombMode || this.local.dead) {
+      this.bombPromptEl.classList.add("hidden");
+      return;
+    }
+    const pos = this.local.pos;
+    if (this.bombTeam === "T" && !this.bombPlanted) {
+      const map = MAPS[this.currentMapId];
+      let nearSite = false;
+      if (map?.bombSites) {
+        for (const site of map.bombSites) {
+          const d = Math.hypot(pos.x - site.pos.x, pos.z - site.pos.z);
+          if (d <= site.radius + 1) { nearSite = true; break; }
+        }
+      }
+      if (nearSite) {
+        this.bombPromptEl.textContent = "HOLD [E] TO PLANT";
+        this.bombPromptEl.classList.remove("hidden");
+      } else {
+        this.bombPromptEl.classList.add("hidden");
+      }
+    } else if (this.bombTeam === "CT" && this.bombPlanted && this.bombPos) {
+      const d = Math.hypot(pos.x - this.bombPos.x, pos.z - this.bombPos.z);
+      if (d <= BOMB.proximityRadius + 2) {
+        this.bombPromptEl.textContent = "HOLD [E] TO DEFUSE";
+        this.bombPromptEl.classList.remove("hidden");
+      } else {
+        this.bombPromptEl.classList.add("hidden");
+      }
+    } else {
+      this.bombPromptEl.classList.add("hidden");
+    }
   }
 
   private switchWeapon(id: string) {
@@ -595,6 +824,11 @@ export class Game {
     }
   }
 
+  /** Clear ability cooldowns so they're ready again after respawning. */
+  private resetAbilityCooldowns() {
+    this.abilityCd = {};
+  }
+
   private losBlocked(a: THREE.Vector3, b: THREE.Vector3): boolean {
     const dir = b.clone().sub(a);
     const dist = dir.length();
@@ -607,9 +841,60 @@ export class Game {
   private syncLocal(p: PlayerState) {
     const wasDead = this.local.dead;
     this.local.dead = p.dead;
-    if (!p.dead && wasDead) this.hud.setDead(false);
-    if (p.dead && !wasDead) this.hud.setDead(true);
+    if (!p.dead && wasDead) { this.hud.setDead(false); this.clearDeathTracer(); }
+    if (p.dead && !wasDead) { this.hud.setDead(true); this.resetAbilityCooldowns(); }
     this.hud.setHealth(p.health);
+  }
+
+  /**
+   * Death-cam: draw a persistent red line from the killer's muzzle to the
+   * impact point so the corpse can see where the lethal shot came from. Cleared
+   * on respawn.
+   */
+  private showDeathTracer(from: THREE.Vector3, to: THREE.Vector3) {
+    this.clearDeathTracer();
+    const g = new THREE.Group();
+
+    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const line = new THREE.Line(
+      geo,
+      new THREE.LineBasicMaterial({ color: 0xff2d4b, transparent: true, opacity: 0.9 }),
+    );
+    line.raycast = () => {};
+    g.add(line);
+
+    // A glowing marker at the shooter's muzzle (where the bullet came from).
+    const src = new THREE.Mesh(
+      new THREE.SphereGeometry(0.18, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xff2d4b }),
+    );
+    src.position.copy(from);
+    src.raycast = () => {};
+    g.add(src);
+
+    // A small marker at the impact point.
+    const hit = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffd23b }),
+    );
+    hit.position.copy(to);
+    hit.raycast = () => {};
+    g.add(hit);
+
+    this.renderer.scene.add(g);
+    this.deathTracer = g;
+  }
+
+  private clearDeathTracer() {
+    if (!this.deathTracer) return;
+    this.renderer.scene.remove(this.deathTracer);
+    this.deathTracer.traverse((o) => {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+    });
+    this.deathTracer = null;
   }
 
   private loop() {
@@ -650,6 +935,7 @@ export class Game {
     if (mv.jumped) this.sfx.jump();
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
+    if (mv.padLaunched) this.sfx.pad();
 
     // Footsteps: play periodically while moving on the ground (not sliding).
     if (!this.local.dead && this.local.grounded && !this.local.sliding) {
@@ -668,14 +954,24 @@ export class Game {
     if (!this.local.dead && this.local.pos.y < -30 && !this.fellSent) {
       this.fellSent = true;
       this.local.dead = true;
+      this.resetAbilityCooldowns();
       this.hud.setDead(true);
       this.sfx.death();
       this.net.send({ t: "fell" });
-      this.showPauseMenu(true);
     }
     this.weapon.update(dt, !this.inIntermission && this.input.firing && this.input.locked, this.input.ads);
     this.remotes.update(dt);
     this.updateAbilityHud();
+
+    // Bomb mode: E key state + HUD prompts.
+    if (this.inBombMode && !this.local.dead && !this.inIntermission) {
+      const useHeld = this.input.useHeld;
+      if (useHeld !== this.lastUseHeld) {
+        this.lastUseHeld = useHeld;
+        this.net.send({ t: "use", held: useHeld });
+      }
+      this.updateBombPrompt();
+    }
 
     // Send local state to the server at a fixed rate.
     this.sendAccum += dt;
@@ -687,6 +983,7 @@ export class Game {
         pos: { x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z },
         yaw: this.local.yaw,
         pitch: this.local.pitch,
+        posture: this.local.sliding ? 2 : this.local.crouching ? 1 : 0,
       });
     }
 
@@ -701,8 +998,17 @@ export class Game {
       this.interCountdown.textContent = String(secsLeft);
     }
 
-    const remainingMs = this.inIntermission ? 0 : this.matchEndsAt - (Date.now() + this.clockOffset);
-    this.hud.setTimer(remainingMs);
+    if (this.inBombMode) {
+      if (this.bombPlanted && this.bombDetonatesAt > 0) {
+        const sec = Math.max(0, Math.ceil((this.bombDetonatesAt - Date.now()) / 1000));
+        this.bombTimerEl.textContent = `BOMB  ${sec}s`;
+      }
+      const roundMs = Math.max(0, this.bombRoundEndsAt - Date.now());
+      this.hud.setTimer(roundMs);
+    } else {
+      const remainingMs = this.inIntermission ? 0 : this.matchEndsAt - (Date.now() + this.clockOffset);
+      this.hud.setTimer(remainingMs);
+    }
 
     this.renderer.render();
     requestAnimationFrame(() => this.loop());
