@@ -117,7 +117,16 @@ export function stepMovement(
   // Ramps: snap to the slope surface when walking on one (lets you climb).
   if (!jumped) {
     const ry = world.rampGround(state.pos);
-    if (ry !== null && state.vel.y <= 1 && state.pos.y >= ry - 1.4 && state.pos.y <= ry + 0.5) {
+    // Only snap when the ramp is at/above our feet (climbing or following the
+    // slope) or while airborne. Never drag a grounded player DOWN onto a ramp
+    // surface below their current footing — a ramp whose low end dips below the
+    // floor would otherwise sink them into the floor slab and the next tick's
+    // horizontal resolution would fling them to the arena edge.
+    if (
+      ry !== null && state.vel.y <= 1 &&
+      state.pos.y >= ry - 1.4 && state.pos.y <= ry + 0.5 &&
+      (!state.grounded || ry >= state.pos.y)
+    ) {
       state.pos.y = ry;
       if (state.vel.y < 0) state.vel.y = 0;
       state.grounded = true;
