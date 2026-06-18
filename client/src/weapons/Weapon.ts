@@ -440,9 +440,18 @@ export class Weapon {
       wallPoint = hitPoint.clone();
     }
 
-    // Melee swings don't draw bullet tracers.
-    if (!this.def.melee) this.spawnTracer(origin, dir, hitPoint);
+    // Melee swings don't draw bullet tracers. Start the tracer at the gun's
+    // muzzle (not the camera/eye) so it's visible — an eye-origin tracer runs
+    // straight down the view axis and only shows up when strafing while firing.
+    if (!this.def.melee) this.spawnTracer(this.muzzleWorld(), dir, hitPoint);
     return { hit: hitId >= 0, head, wallPoint };
+  }
+
+  /** World position of the viewmodel's muzzle (barrel tip), for tracer origins. */
+  private muzzleWorldVec = new THREE.Vector3();
+  private muzzleWorld(): THREE.Vector3 {
+    // getWorldPosition refreshes the world matrix up the chain for us.
+    return this.muzzleFlash.getWorldPosition(this.muzzleWorldVec);
   }
 
   /** Render a tracer for a shot fired by another player. */
