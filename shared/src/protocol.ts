@@ -259,7 +259,7 @@ export interface S_ForceWeapon {
 /** A grenade detonated — clients spawn effects and may get blinded. */
 export interface S_Explosion {
   t: "explosion";
-  kind: "flash" | "frag";
+  kind: "flash" | "frag" | "siphon";
   pos: Vec3;
 }
 

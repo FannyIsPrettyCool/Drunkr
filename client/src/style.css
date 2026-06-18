@@ -371,6 +371,7 @@ body {
 }
 
 #health {
+  position: relative;
   font-size: 2.2rem;
   color: var(--neon-pink);
   text-shadow: 0 0 10px var(--neon-pink);
@@ -381,6 +382,19 @@ body {
   margin-right: 0.5rem;
   vertical-align: super;
 }
+/* Overheal (Fortify / vampire): blue-neon "+N" stacked just above the HP
+   number. The ability bar is lifted (below) to leave room for it. */
+#overheal-val {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 0.1rem;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 8px var(--neon-cyan), 0 0 18px var(--neon-cyan);
+}
+#overheal-val.hidden { display: none; }
 
 #ammo-block { text-align: right; }
 #weapon-name {
@@ -443,7 +457,9 @@ body {
 
 #abilities {
   position: absolute;
-  bottom: 5.2rem;
+  /* Sits above the HP readout; lifted to clear the overheal "+N" badge that
+     appears just above the HP number (Fortify / vampire overheal). */
+  bottom: 6.6rem;
   left: 3rem;
   display: flex;
   gap: 0.5rem;
