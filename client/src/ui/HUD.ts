@@ -4,6 +4,7 @@ import type { PlayerState } from "@drunkr/shared";
 export class HUD {
   private root = document.getElementById("hud")!;
   private healthVal = document.getElementById("health-val")!;
+  private overhealVal = document.getElementById("overheal-val")!;
   private ammoCur = document.getElementById("ammo-cur")!;
   private ammoMax = document.getElementById("ammo-max")!;
   private killfeed = document.getElementById("killfeed")!;
@@ -32,7 +33,17 @@ export class HUD {
   }
 
   setHealth(hp: number) {
-    this.healthVal.textContent = String(Math.max(0, Math.round(hp)));
+    const total = Math.max(0, Math.round(hp));
+    // Base health caps at 100 (pink); anything above is overheal, shown as a
+    // blue-neon "+N" floating above the number (Fortify / vampire abilities).
+    this.healthVal.textContent = String(Math.min(100, total));
+    const over = Math.max(0, total - 100);
+    if (over > 0) {
+      this.overhealVal.textContent = `+${over}`;
+      this.overhealVal.classList.remove("hidden");
+    } else {
+      this.overhealVal.classList.add("hidden");
+    }
   }
 
   setAmmo(cur: number, max: number) {

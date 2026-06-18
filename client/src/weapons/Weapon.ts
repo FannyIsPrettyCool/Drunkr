@@ -279,6 +279,15 @@ export class Weapon {
     this.cb.onAmmo(this.ammo, this.def.magazine);
   }
 
+  /** Top off only the currently-held weapon's magazine (kill reward). */
+  refillCurrent() {
+    this.reloading = false;
+    this.reloadTimer = 0;
+    this.reloadDelayTimer = 0;
+    this.ammo = this.def.magazine;
+    this.cb.onAmmo(this.ammo, this.def.magazine);
+  }
+
   reload() {
     if (this.reloading || this.ammo === this.def.magazine) return;
     this.reloadDelayTimer = 0;

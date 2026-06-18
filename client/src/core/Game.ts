@@ -14,6 +14,8 @@ import {
   GRENADE,
   BLINK,
   SHOCKWAVE,
+  BLOODLUST,
+  SIPHON,
   type AbilityId,
   type PlayerState,
   type S_Welcome,
@@ -314,7 +316,12 @@ export class Game {
         const killer = this.roster.get(msg.killer)?.name ?? "?";
         const victim = this.roster.get(msg.victim)?.name ?? "?";
         this.hud.addKill(killer, victim, msg.head);
-        if (msg.killer === this.localId) this.sfx.kill();
+        if (msg.killer === this.localId && msg.victim !== this.localId) {
+          this.sfx.kill();
+          // Kill reward: refill the magazine of the weapon we're holding. The
+          // +25 HP refund is applied server-side and arrives via the snapshot.
+          this.weapon.refillCurrent();
+        }
         if (msg.victim === this.localId) {
           this.local.dead = true;
           this.resetAbilityCooldowns();
@@ -741,6 +748,16 @@ export class Game {
         this.local.applyImpulse(0, SHOCKWAVE.selfVy, 0);
         this.sfx.shockwave();
         break;
+      case "bloodlust":
+        this.net.send({ t: "ability", ability: "bloodlust" });
+        this.startBloodlust();
+        this.sfx.fortify();
+        this.hud.banner("BLOODLUST");
+        break;
+      case "siphon":
+        this.net.send({ t: "ability", ability: "siphon" });
+        this.sfx.shockwave();
+        break;
     }
     if (used) this.abilityCd[id] = now + def.cooldownMs;
   }
@@ -749,6 +766,13 @@ export class Game {
     const base = WEAPONS[this.weapon.def.id]?.speedMul ?? 1;
     this.local.speedMul = base * INVIS.speedMul;
     setTimeout(() => this.applyWeaponMods(this.weapon.def.id), INVIS.durationMs);
+  }
+
+  /** Vampire Bloodlust: a short move-speed buff while lifesteal is active. */
+  private startBloodlust() {
+    const base = WEAPONS[this.weapon.def.id]?.speedMul ?? 1;
+    this.local.speedMul = base * BLOODLUST.speedMul;
+    setTimeout(() => this.applyWeaponMods(this.weapon.def.id), BLOODLUST.durationMs);
   }
 
   /** Reconcile rendered grenade meshes with the snapshot's projectile list. */
@@ -778,10 +802,11 @@ export class Game {
     }
   }
 
-  private onExplosion(kind: "flash" | "frag", pos: THREE.Vector3) {
-    this.sfx.boomAt(pos.x, pos.y, pos.z);
-    const color = kind === "frag" ? 0xff7a3d : 0xffffff;
-    const radius = kind === "frag" ? GRENADE.fragRadius : 5;
+  private onExplosion(kind: "flash" | "frag" | "siphon", pos: THREE.Vector3) {
+    if (kind === "siphon") this.sfx.drainAt(pos.x, pos.y, pos.z);
+    else this.sfx.boomAt(pos.x, pos.y, pos.z);
+    const color = kind === "frag" ? 0xff7a3d : kind === "siphon" ? 0xff1f4f : 0xffffff;
+    const radius = kind === "frag" ? GRENADE.fragRadius : kind === "siphon" ? SIPHON.radius : 5;
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 14, 14), mat);
     mesh.position.copy(pos);

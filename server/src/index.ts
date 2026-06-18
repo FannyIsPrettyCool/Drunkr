@@ -31,6 +31,8 @@ import {
   GRENADE,
   FORTIFY,
   SHOCKWAVE,
+  BLOODLUST,
+  SIPHON,
   SNAPSHOT_RATE,
   TICK_RATE,
   MAPS,
@@ -138,6 +140,8 @@ interface Actor {
   abilityCd: Record<string, number>;
   /** Recent positions (server-clock ms) for lag-compensated hit rewind. */
   posHistory: PosSample[];
+  /** Vampire Bloodlust: timestamp (ms) until which dealt damage lifesteals. */
+  bloodlustUntil?: number;
 }
 
 interface PosSample {
@@ -578,6 +582,28 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
       if (dist > SHOCKWAVE.radius) continue;
       dealDamage(room, actor, a, SHOCKWAVE.damage, false);
     }
+  } else if (ability === "bloodlust") {
+    // Vampire: enable lifesteal-on-damage for a few seconds (see dealDamage).
+    actor.bloodlustUntil = now + BLOODLUST.durationMs;
+  } else if (ability === "siphon") {
+    // Vampire: instant AoE life-drain — damage nearby enemies, heal per hit.
+    broadcast(room, { t: "explosion", kind: "siphon", pos: actor.state.pos });
+    let healed = 0;
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const dist = Math.hypot(
+        a.state.pos.x - actor.state.pos.x,
+        a.state.pos.y - actor.state.pos.y,
+        a.state.pos.z - actor.state.pos.z,
+      );
+      if (dist > SIPHON.radius) continue;
+      dealDamage(room, actor, a, SIPHON.damage, false);
+      healed += SIPHON.healPerHit;
+    }
+    if (healed > 0) {
+      const cap = PLAYER.maxHealth + SIPHON.maxOverheal;
+      if (actor.state.health < cap) actor.state.health = Math.min(cap, actor.state.health + healed);
+    }
   }
 }
 
@@ -653,14 +679,34 @@ function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean, 
 
 function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
   if (victim.state.dead) return;
+  const before = victim.state.health;
   victim.state.health -= dmg;
   send(victim.ws, { t: "damage", health: Math.max(0, victim.state.health), from: attacker.id });
+
+  // Vampire Bloodlust: heal the attacker for a fraction of the damage actually
+  // dealt while the buff is active (can briefly overheal). Reflected next snapshot.
+  if (
+    attacker.id !== victim.id && !attacker.state.dead &&
+    attacker.bloodlustUntil && Date.now() < attacker.bloodlustUntil
+  ) {
+    const dealt = Math.max(0, before - Math.max(0, victim.state.health));
+    const heal = Math.round(dealt * BLOODLUST.lifestealPct);
+    const cap = PLAYER.maxHealth + BLOODLUST.maxOverheal;
+    if (heal > 0 && attacker.state.health < cap) {
+      attacker.state.health = Math.min(cap, attacker.state.health + heal);
+    }
+  }
 
   if (victim.state.health <= 0) {
     victim.state.dead = true;
     victim.state.health = 0;
     victim.state.deaths++;
     attacker.state.kills++;
+    // Kill reward: refund 25 HP (capped at max, preserving any overheal). The
+    // killer's client refills its held weapon's magazine off the "kill" broadcast.
+    if (attacker.id !== victim.id && attacker.state.health < PLAYER.maxHealth) {
+      attacker.state.health = Math.min(PLAYER.maxHealth, attacker.state.health + 25);
+    }
     broadcast(room, {
       t: "kill", killer: attacker.id, victim: victim.id, head,
       ...(shot ? { from: shot.from, at: shot.at } : {}),
@@ -1321,6 +1367,10 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
 // origin (no separate static host, no hard-coded socket port).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = process.env.CLIENT_DIR ?? join(__dirname, "../../client/dist");
+// Audio (and other) assets live in shared/assets and are served at /assets/ in
+// dev by a Vite middleware. In production that middleware doesn't run, so serve
+// them here too — otherwise /assets/*.wav 404s into the SPA fallback (silence).
+const SHARED_ASSETS_DIR = process.env.SHARED_ASSETS_DIR ?? join(__dirname, "../../shared/assets");
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1346,6 +1396,25 @@ const MIME: Record<string, string> = {
 const httpServer = http.createServer(async (req, res) => {
   // Tiny static file server with SPA fallback to index.html.
   const reqPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
+  // Shared assets (sounds, music): served from shared/assets, not the SPA bundle.
+  // Match on the raw URL path (always "/"-separated) so this works on Windows
+  // too, where path.normalize would switch to backslashes. No index.html
+  // fallback — a missing asset must 404, not return HTML (which can't decode).
+  if (reqPath.startsWith("/assets/")) {
+    // Drop the prefix, then normalize + strip any ".." so we can't escape the dir.
+    const sub = normalize(reqPath.slice("/assets/".length)).replace(/^(\.\.[/\\])+/, "");
+    const assetFile = join(SHARED_ASSETS_DIR, sub);
+    try {
+      const body = await readFile(assetFile);
+      res.writeHead(200, { "content-type": MIME[extname(assetFile)] ?? "application/octet-stream" });
+      res.end(body);
+    } catch {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("Not found");
+    }
+    return;
+  }
+
   // Strip any leading "../" segments so requests can't escape CLIENT_DIR.
   const rel = normalize(reqPath).replace(/^(\.\.[/\\])+/, "");
   let filePath = join(CLIENT_DIR, rel === "/" || rel === "" ? "index.html" : rel);

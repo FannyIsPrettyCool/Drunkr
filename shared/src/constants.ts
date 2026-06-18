@@ -94,7 +94,7 @@ export const BOMB = {
 
 export type AbilityId =
   | "dash" | "updraft" | "invis" | "confusion" | "flash" | "frag"
-  | "blink" | "fortify" | "shockwave";
+  | "blink" | "fortify" | "shockwave" | "bloodlust" | "siphon";
 
 export interface AbilityDef {
   id: AbilityId;
@@ -114,6 +114,8 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
   blink: { id: "blink", name: "Blink", cooldownMs: 6000, server: false },
   fortify: { id: "fortify", name: "Fortify", cooldownMs: 12000, server: true },
   shockwave: { id: "shockwave", name: "Shockwave", cooldownMs: 10000, server: true },
+  bloodlust: { id: "bloodlust", name: "Bloodlust", cooldownMs: 11000, server: true },
+  siphon: { id: "siphon", name: "Siphon", cooldownMs: 9000, server: true },
 };
 
 export interface ClassDef {
@@ -130,6 +132,7 @@ export const CLASSES: Record<string, ClassDef> = {
   cyborg: { id: "cyborg", name: "Cyborg", F: "flash", C: "frag" },
   juggernaut: { id: "juggernaut", name: "Juggernaut", F: "fortify", C: "shockwave" },
   phantom: { id: "phantom", name: "Phantom", F: "blink", C: "invis" },
+  vampire: { id: "vampire", name: "Vampire", F: "bloodlust", C: "siphon" },
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 export const DEFAULT_CLASS = "wind";
@@ -142,6 +145,16 @@ export const BLINK = { dist: 11 };
 export const FORTIFY = { overheal: 50 };
 /** Juggernaut Shockwave: AoE damage burst around you (+ a small self-leap). */
 export const SHOCKWAVE = { radius: 7, damage: 65, selfVy: 9 };
+/**
+ * Vampire Bloodlust: a timed buff where the damage you deal heals you (lifesteal),
+ * can briefly overheal, and you move a bit faster while it's active.
+ */
+export const BLOODLUST = { durationMs: 5000, lifestealPct: 0.6, maxOverheal: 40, speedMul: 1.15 };
+/**
+ * Vampire Siphon: an instant AoE life-drain around you — damages nearby enemies
+ * and heals you per enemy hit (overheal up to maxOverheal).
+ */
+export const SIPHON = { radius: 9, damage: 40, healPerHit: 22, maxOverheal: 50 };
 export const GRENADE = {
   fuseMs: 1400,
   speed: 24,
@@ -149,9 +162,9 @@ export const GRENADE = {
   /** Velocity retained after a bounce. */
   bounce: 0.5,
   radius: 0.25,
-  flashRadius: 26,
+  flashRadius: 40,
   /** Full-blind duration; the white screen holds then fades over this. */
-  flashBlindMs: 3000,
+  flashBlindMs: 2500,
   fragRadius: 11,
   fragDamage: 130,
 };

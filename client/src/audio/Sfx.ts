@@ -196,4 +196,9 @@ export class Sfx {
   boomAt(x: number, y: number, z: number) {
     this.playAt('frag_grenade.wav', x, y, z, 1.2);
   }
+
+  /** Vampire Siphon drain pulse, positioned in the world. */
+  drainAt(x: number, y: number, z: number) {
+    this.playAt('shockwave.wav', x, y, z, 0.9);
+  }
 }
