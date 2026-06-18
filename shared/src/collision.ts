@@ -97,9 +97,12 @@ export class CollisionWorld {
     }));
   }
 
-  /** Surface height of a ramp under `pos`, or null if not over any ramp. */
+  /** Surface height of a ramp under `pos`, or null if not over any ramp. When
+   * several ramps overlap (e.g. a staircase of ramps, or footprints widened by
+   * the edge margin), return the highest surface so seams don't snap you down. */
   rampGround(pos: Vec3): number | null {
     const m = 0.25; // margin prevents gap-glitches at ramp edge transitions
+    let best: number | null = null;
     for (const r of this.ramps) {
       if (pos.x < r.minX - m || pos.x > r.maxX + m || pos.z < r.minZ - m || pos.z > r.maxZ + m) continue;
       let t: number; // 0 at low edge, 1 at high edge
@@ -107,9 +110,10 @@ export class CollisionWorld {
       else if (r.dir === 1) t = (r.maxX - pos.x) / (r.maxX - r.minX);
       else if (r.dir === 2) t = (pos.z - r.minZ) / (r.maxZ - r.minZ);
       else t = (r.maxZ - pos.z) / (r.maxZ - r.minZ);
-      return r.baseY + r.height * (t < 0 ? 0 : t > 1 ? 1 : t);
+      const y = r.baseY + r.height * (t < 0 ? 0 : t > 1 ? 1 : t);
+      if (best === null || y > best) best = y;
     }
-    return null;
+    return best;
   }
 
   /** If grounded over a jump pad, returns its launch velocity; else null. */
@@ -214,10 +218,12 @@ export class CollisionWorld {
     const feet = pos.y, head = pos.y + height;
     if (head <= o.cy - o.hy || feet >= o.cy + o.hy) return { grounded: false, hitWall: false };
 
-    // World → local XZ (rotate by -yaw about the box centre).
+    // World → local XZ. Must match the renderer, which orients the box with
+    // THREE.makeRotationY(yaw): local→world is (c·lx + s·lz, -s·lx + c·lz), so
+    // the inverse (world→local) is (c·rx − s·rz, s·rx + c·rz).
     const rx = pos.x - o.cx, rz = pos.z - o.cz;
-    const lx = rx * o.cos + rz * o.sin;
-    const lz = -rx * o.sin + rz * o.cos;
+    const lx = rx * o.cos - rz * o.sin;
+    const lz = rx * o.sin + rz * o.cos;
 
     const clx = lx < -o.hx ? -o.hx : lx > o.hx ? o.hx : lx;
     const clz = lz < -o.hz ? -o.hz : lz > o.hz ? o.hz : lz;
@@ -255,9 +261,9 @@ export class CollisionWorld {
       if (vel.y > 0) vel.y = 0;
       return { grounded: false, hitWall: false };
     }
-    // Local push direction → world.
-    const wx = nlx * o.cos - nlz * o.sin;
-    const wz = nlx * o.sin + nlz * o.cos;
+    // Local push direction → world (renderer's local→world orientation).
+    const wx = nlx * o.cos + nlz * o.sin;
+    const wz = -nlx * o.sin + nlz * o.cos;
     pos.x += wx * horizPen;
     pos.z += wz * horizPen;
     const vn = vel.x * wx + vel.z * wz;
@@ -292,8 +298,8 @@ export class CollisionWorld {
         const py = a.y + dy * t;
         if (py <= o.cy - o.hy || py >= o.cy + o.hy) continue;
         const rx = (a.x + dx * t) - o.cx, rz = (a.z + dz * t) - o.cz;
-        const lx = rx * o.cos + rz * o.sin;
-        const lz = -rx * o.sin + rz * o.cos;
+        const lx = rx * o.cos - rz * o.sin;
+        const lz = rx * o.sin + rz * o.cos;
         if (lx > -o.hx && lx < o.hx && lz > -o.hz && lz < o.hz) return true;
       }
     }
