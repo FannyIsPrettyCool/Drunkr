@@ -1396,25 +1396,6 @@ const MIME: Record<string, string> = {
 const httpServer = http.createServer(async (req, res) => {
   // Tiny static file server with SPA fallback to index.html.
   const reqPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
-  // Shared assets (sounds, music): served from shared/assets, not the SPA bundle.
-  // Match on the raw URL path (always "/"-separated) so this works on Windows
-  // too, where path.normalize would switch to backslashes. No index.html
-  // fallback — a missing asset must 404, not return HTML (which can't decode).
-  if (reqPath.startsWith("/assets/")) {
-    // Drop the prefix, then normalize + strip any ".." so we can't escape the dir.
-    const sub = normalize(reqPath.slice("/assets/".length)).replace(/^(\.\.[/\\])+/, "");
-    const assetFile = join(SHARED_ASSETS_DIR, sub);
-    try {
-      const body = await readFile(assetFile);
-      res.writeHead(200, { "content-type": MIME[extname(assetFile)] ?? "application/octet-stream" });
-      res.end(body);
-    } catch {
-      res.writeHead(404, { "content-type": "text/plain" });
-      res.end("Not found");
-    }
-    return;
-  }
-
   // Strip any leading "../" segments so requests can't escape CLIENT_DIR.
   const rel = normalize(reqPath).replace(/^(\.\.[/\\])+/, "");
   let filePath = join(CLIENT_DIR, rel === "/" || rel === "" ? "index.html" : rel);
@@ -1422,7 +1403,25 @@ const httpServer = http.createServer(async (req, res) => {
     const s = await stat(filePath);
     if (s.isDirectory()) filePath = join(filePath, "index.html");
   } catch {
-    // Unknown path: fall back to the SPA entry so client routing still works.
+    // Not in the client bundle. Sounds/music live in shared/assets (served at
+    // /assets/ by Vite in dev). Try there before the SPA fallback so audio
+    // works in production — but only as a fallback, so it never shadows the
+    // Vite JS/CSS bundle, which is *also* served from CLIENT_DIR/assets above.
+    if (reqPath.startsWith("/assets/")) {
+      const sub = normalize(reqPath.slice("/assets/".length)).replace(/^(\.\.[/\\])+/, "");
+      const assetFile = join(SHARED_ASSETS_DIR, sub);
+      try {
+        const body = await readFile(assetFile);
+        res.writeHead(200, { "content-type": MIME[extname(assetFile)] ?? "application/octet-stream" });
+        res.end(body);
+      } catch {
+        // A missing asset must 404, not return HTML (which can't decode).
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("Not found");
+      }
+      return;
+    }
+    // Unknown route: fall back to the SPA entry so client routing still works.
     filePath = join(CLIENT_DIR, "index.html");
   }
   try {
