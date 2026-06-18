@@ -29,6 +29,9 @@ class Remote {
   private color: THREE.Color;
   private weaponId = "";
   private weaponMesh: THREE.Object3D | null = null;
+  private muzzleMarker: THREE.Object3D | null = null;
+  /** Melee swing progress (1 = just swung, decays to 0). */
+  private swingT = 0;
   private invis = false;
   private stride = 0;
   private prev = new THREE.Vector3();
@@ -156,6 +159,7 @@ class Remote {
       g.add(me);
       return me;
     };
+    let muzzleZ = -0.95;
     switch (id) {
       case "sniper": {
         box(0.065, 0.09, 0.46, mat, -0.4);              // receiver
@@ -165,6 +169,7 @@ class Remote {
         box(0.052, 0.052, 0.04, accent, -0.62, 0, 0.12); // front lens
         box(0.045, 0.13, 0.07, mat, 0.02, 0, -0.12).rotation.x = 0.5; // grip
         box(0.05, 0.07, 0.58, mat, 0.12);               // stock (bridges to receiver)
+        muzzleZ = -1.32;
         break;
       }
       case "shotgun": {
@@ -174,6 +179,7 @@ class Remote {
         box(0.09, 0.016, 0.42, accent, -0.62);          // neon rib
         box(0.05, 0.13, 0.08, mat, 0.04, 0, -0.12).rotation.x = 0.4; // grip
         box(0.07, 0.1, 0.48, mat, 0.16);                // stock (bridges to receiver)
+        muzzleZ = -0.95;
         break;
       }
       case "katana": {
@@ -211,8 +217,25 @@ class Remote {
       }
     }
     g.traverse((o) => { o.raycast = () => {}; }); // gun isn't a hitbox
+    // Empty marker at the barrel tip so remote bullet tracers start at the
+    // muzzle rather than the shooter's head.
+    const muzzle = new THREE.Object3D();
+    muzzle.position.set(0, 0, muzzleZ);
+    g.add(muzzle);
+    this.muzzleMarker = muzzle;
     this.weaponMesh = g;
     this.hand.add(g);
+  }
+
+  /** World position of this avatar's gun muzzle (null if no weapon built). */
+  muzzleWorld(target: THREE.Vector3): THREE.Vector3 | null {
+    if (!this.muzzleMarker) return null;
+    return this.muzzleMarker.getWorldPosition(target);
+  }
+
+  /** Trigger a one-shot melee swing animation (katana). */
+  meleeSwing() {
+    this.swingT = 1;
   }
 
   /** Cloaked enemies fade to a faint shimmer. */
@@ -309,11 +332,15 @@ class Remote {
 
     // Weapon hold: both arms reach forward and inward onto the weapon.
     const aim = -this.lastPitch;
+    // Melee slash arc: a quick diagonal chop that decays back to the rest pose.
+    this.swingT = Math.max(0, this.swingT - dt * 5);
+    const slash = this.swingT > 0 ? Math.sin((1 - this.swingT) * Math.PI) : 0;
     if (this.weaponId === "katana") {
-      // Katana stance: both hands together on the handle, blade out sideways.
-      this.weaponHold.rotation.set(-this.lastPitch * 0.4, 0.8, 0.45);
-      this.armR.rotation.set(-1.28 + swing * 0.05, 0, -0.18);
-      this.armL.rotation.set(-1.36 - swing * 0.05, 0, 0.32);
+      // Katana stance: both hands together on the handle, blade out sideways;
+      // overlay the slash arc when swinging.
+      this.weaponHold.rotation.set(-this.lastPitch * 0.4 - slash * 1.2, 0.8 - slash * 1.7, 0.45 + slash * 0.4);
+      this.armR.rotation.set(-1.28 + swing * 0.05 - slash * 0.7, 0, -0.18);
+      this.armL.rotation.set(-1.36 - swing * 0.05 - slash * 0.6, 0, 0.32);
     } else {
       this.weaponHold.rotation.set(-this.lastPitch, 0, 0);
       this.armR.rotation.set(-1.45 + aim * 0.4 + swing * 0.05, 0, -0.28);
@@ -427,5 +454,15 @@ export class RemotePlayers {
   position(id: number): THREE.Vector3 | null {
     const r = this.players.get(id);
     return r ? r.group.position : null;
+  }
+
+  /** World position of a remote player's gun muzzle (for tracer origins). */
+  muzzleWorld(id: number, target: THREE.Vector3): THREE.Vector3 | null {
+    return this.players.get(id)?.muzzleWorld(target) ?? null;
+  }
+
+  /** Play a melee swing animation on a remote player. */
+  meleeSwing(id: number) {
+    this.players.get(id)?.meleeSwing();
   }
 }

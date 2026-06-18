@@ -331,9 +331,15 @@ export class Game {
       }
       case "shot": {
         const o = new THREE.Vector3(msg.origin.x, msg.origin.y, msg.origin.z);
-        if (!msg.melee) {
+        if (msg.melee) {
+          // Show the attacker's katana swing.
+          this.remotes.meleeSwing(msg.from);
+        } else {
+          // Start tracers at the shooter's muzzle (falling back to the eye
+          // origin) so they come out of the barrel, not the head.
+          const start = this.remotes.muzzleWorld(msg.from, new THREE.Vector3()) ?? o;
           for (const dir of msg.dirs) {
-            this.weapon.remoteShot(o, new THREE.Vector3(dir.x, dir.y, dir.z));
+            this.weapon.remoteShot(start, new THREE.Vector3(dir.x, dir.y, dir.z));
           }
         }
         // True 3D positional audio — PannerNode handles distance falloff.
