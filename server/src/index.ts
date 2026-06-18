@@ -1,4 +1,8 @@
 import { WebSocketServer, WebSocket } from "ws";
+import http from "node:http";
+import { readFile, stat } from "node:fs/promises";
+import { join, normalize, extname, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   decode,
   encode,
@@ -1312,7 +1316,57 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
 
 // --- connections -----------------------------------------------------------
 
-const wss = new WebSocketServer({ port: PORT });
+// Serve the built client from this same process so the whole game is a single
+// deployable on one port: static files over HTTP, gameplay over WS on the same
+// origin (no separate static host, no hard-coded socket port).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLIENT_DIR = process.env.CLIENT_DIR ?? join(__dirname, "../../client/dist");
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".map": "application/json; charset=utf-8",
+};
+
+const httpServer = http.createServer(async (req, res) => {
+  // Tiny static file server with SPA fallback to index.html.
+  const reqPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
+  // Strip any leading "../" segments so requests can't escape CLIENT_DIR.
+  const rel = normalize(reqPath).replace(/^(\.\.[/\\])+/, "");
+  let filePath = join(CLIENT_DIR, rel === "/" || rel === "" ? "index.html" : rel);
+  try {
+    const s = await stat(filePath);
+    if (s.isDirectory()) filePath = join(filePath, "index.html");
+  } catch {
+    // Unknown path: fall back to the SPA entry so client routing still works.
+    filePath = join(CLIENT_DIR, "index.html");
+  }
+  try {
+    const body = await readFile(filePath);
+    res.writeHead(200, { "content-type": MIME[extname(filePath)] ?? "application/octet-stream" });
+    res.end(body);
+  } catch {
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Not found");
+  }
+});
+
+const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
   let actor: Actor | null = null;
@@ -1588,4 +1642,6 @@ createRoom(
   true,
 );
 
-console.log(`Drunkr server on ws://localhost:${PORT}  default map: ${MAPS[DEFAULT_MAP].name}  bots: ${DEFAULT_BOTS}`);
+httpServer.listen(PORT, () => {
+  console.log(`Drunkr listening on :${PORT}  (client + ws, same origin)  default map: ${MAPS[DEFAULT_MAP].name}  bots: ${DEFAULT_BOTS}`);
+});

@@ -2,13 +2,19 @@ import { decode, encode, type ClientMessage, type ServerMessage } from "@drunkr/
 
 type Handler = (msg: ServerMessage) => void;
 
-/** Resolve the server URL: same host as the page, port 2567 (override via ?server=). */
+/**
+ * Resolve the server URL (override via ?server=).
+ * In production the Node server hosts both the client and the socket, so we
+ * connect to the same origin (host + port) the page was served from. In local
+ * dev the client is served by Vite on a different port, so target :2567.
+ */
 function serverUrl(): string {
   const params = new URLSearchParams(location.search);
   const override = params.get("server");
   if (override) return override;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.hostname}:2567`;
+  if (import.meta.env.DEV) return `${proto}://${location.hostname}:2567`;
+  return `${proto}://${location.host}`;
 }
 
 export class Network {
