@@ -63,6 +63,11 @@ export class Weapon {
   /** Smoothed zoom factor (0 = hip, 1 = fully scoped). */
   private zoom = 0;
 
+  /** VR: render the gun in the controller's hand and aim from it, not the head. */
+  vrMode = false;
+  /** When set (VR), the viewmodel parents to this controller and shots ray from it. */
+  private hand: THREE.Object3D | null = null;
+
   constructor(
     private camera: THREE.PerspectiveCamera,
     private scene: THREE.Scene,
@@ -94,6 +99,17 @@ export class Weapon {
   /** Switch to a different weapon by id. Returns whether it changed. */
   setColliders(colliders: THREE.Object3D[]) {
     this.colliders = colliders;
+  }
+
+  /**
+   * VR: hand the gun to a controller. Pass the controller Object3D to mount the
+   * viewmodel in that hand and aim shots from it; pass null to return it to the
+   * head (desktop). Rebuilds the viewmodel under the new parent.
+   */
+  setHand(controller: THREE.Object3D | null) {
+    this.hand = controller;
+    this.vrMode = controller !== null;
+    this.buildViewmodel();
   }
 
   switchTo(id: string): boolean {
@@ -259,9 +275,18 @@ export class Weapon {
     g.add(this.muzzle);
     g.add(this.muzzleFlash);
 
-    g.position.set(0.22, -0.2, -0.35);
-    this.viewmodel = g;
-    this.camera.add(g);
+    if (this.hand) {
+      // VR: gun sits in the controller, scaled down (these viewmodels are big),
+      // grip near the controller origin and the barrel pointing down -Z.
+      g.position.set(0, -0.02, -0.04);
+      g.scale.setScalar(0.6);
+      this.viewmodel = g;
+      this.hand.add(g);
+    } else {
+      g.position.set(0.22, -0.2, -0.35);
+      this.viewmodel = g;
+      this.camera.add(g);
+    }
   }
 
   /** True while zoomed in through a scope (for scoped-sensitivity). */
@@ -334,18 +359,25 @@ export class Weapon {
       : 0;
     this.cb.onReloadState(this.reloading, Math.max(0, Math.min(1, progress)));
 
-    // Scope zoom (smoothed). Only scoped weapons zoom; hide the model when in.
-    const zoomTarget = this.ads && this.def.scoped && !this.local.dead ? 1 : 0;
-    this.zoom += (zoomTarget - this.zoom) * Math.min(1, 16 * dt);
-    const targetFov = this.def.zoomFov ?? this.baseFov;
-    const fov = this.baseFov + (targetFov - this.baseFov) * this.zoom;
-    if (Math.abs(this.camera.fov - fov) > 0.02) {
-      this.camera.fov = fov;
-      this.camera.updateProjectionMatrix();
+    if (this.vrMode) {
+      // VR: no ADS zoom (projection is headset-driven); just keep the gun visible
+      // in-hand while alive. Aiming is done with the controller, not a scope.
+      this.zoom = 0;
+      this.viewmodel.visible = !this.local.dead;
+    } else {
+      // Scope zoom (smoothed). Only scoped weapons zoom; hide the model when in.
+      const zoomTarget = this.ads && this.def.scoped && !this.local.dead ? 1 : 0;
+      this.zoom += (zoomTarget - this.zoom) * Math.min(1, 16 * dt);
+      const targetFov = this.def.zoomFov ?? this.baseFov;
+      const fov = this.baseFov + (targetFov - this.baseFov) * this.zoom;
+      if (Math.abs(this.camera.fov - fov) > 0.02) {
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+      }
+      // Hide the viewmodel while scoped in, and entirely while dead (it reappears on respawn).
+      this.viewmodel.visible = this.zoom < 0.5 && !this.local.dead;
+      this.cb.onScope(this.zoom > 0.6);
     }
-    // Hide the viewmodel while scoped in, and entirely while dead (it reappears on respawn).
-    this.viewmodel.visible = this.zoom < 0.5 && !this.local.dead;
-    this.cb.onScope(this.zoom > 0.6);
 
     this.updateEffects(dt);
   }
@@ -357,10 +389,18 @@ export class Weapon {
       this.cb.onAmmo(this.ammo, this.def.magazine);
     }
 
+    // Aim from the controller in VR (the gun is in your hand), else from the eye.
     const origin = new THREE.Vector3();
-    this.camera.getWorldPosition(origin);
     const forward = new THREE.Vector3();
-    this.camera.getWorldDirection(forward);
+    if (this.hand) {
+      this.hand.getWorldPosition(origin);
+      // Controller "forward" is its local -Z (the target-ray direction).
+      const e = this.hand.matrixWorld.elements;
+      forward.set(-e[8], -e[9], -e[10]).normalize();
+    } else {
+      this.camera.getWorldPosition(origin);
+      this.camera.getWorldDirection(forward);
+    }
 
     // Scoped weapons are only accurate while aiming down sights.
     const scopedIn = this.def.scoped && this.zoom > 0.5;

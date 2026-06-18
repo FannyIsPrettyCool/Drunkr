@@ -10,6 +10,13 @@ export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * The player "rig": the camera lives inside this group. On desktop it stays
+   * at the identity so the camera's local transform is its world transform
+   * (unchanged behaviour). In VR the headset drives the camera's local pose and
+   * we move/rotate this rig instead (feet position + snap-turn yaw).
+   */
+  readonly rig: THREE.Group;
 
   /** Target internal vertical resolution; lower = chunkier pixels. */
   private pixelHeight = 360;
@@ -28,6 +35,9 @@ export class Renderer {
     this.scene.fog = new THREE.Fog(0x05060c, 120, 320);
 
     this.camera = new THREE.PerspectiveCamera(82, 1, 0.05, 1000);
+    this.rig = new THREE.Group();
+    this.rig.add(this.camera);
+    this.scene.add(this.rig);
 
     this.setupLights();
     this.resize();

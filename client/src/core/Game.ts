@@ -35,8 +35,17 @@ import { Input } from "../input/Input.js";
 import { HUD } from "../ui/HUD.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
+import { XrManager } from "../xr/XrManager.js";
+import { VrHud } from "../xr/VrHud.js";
+import type { PlayerInput } from "../entities/LocalPlayer.js";
 import { settings, QUALITY_HEIGHT } from "./Settings.js";
 import type { Network } from "../net/Network.js";
+
+/** What the game loop reads from whichever input source is active. */
+type LoopInput = PlayerInput & { readonly useHeld: boolean; readonly showScores: boolean };
+
+/** Weapon-cycle order for VR (no number keys). */
+const WEAPON_CYCLE = ["ak", "sniper", "shotgun", "katana"];
 
 export class Game {
   private renderer: Renderer;
@@ -49,6 +58,8 @@ export class Game {
   private sfx = new Sfx();
   private music: Music | null = null;
   private musicStarted = false;
+  private xr: XrManager | null = null;
+  private vrHud: VrHud | null = null;
 
   // Pause / death menu DOM refs.
   private pauseMenu = document.getElementById("pause-menu")!;
@@ -136,7 +147,7 @@ export class Game {
 
     this.remotes = new RemotePlayers(this.renderer.scene, () => this.localId);
     this.local = new LocalPlayer(this.renderer.camera, this.arena.collision);
-    this.renderer.scene.add(this.renderer.camera);
+    // The camera is parented inside renderer.rig (added to the scene there).
 
     this.hud = new HUD();
     this.input = new Input(canvas);
@@ -186,6 +197,18 @@ export class Game {
       }
     };
     this.initPauseMenu();
+
+    // WebXR (immersive VR). Adds a "VR" button; entering switches the loop to a
+    // headset-driven camera + motion-controller controls. Desktop is untouched.
+    this.vrHud = new VrHud(this.renderer.camera);
+    this.xr = new XrManager(this.renderer.renderer, this.renderer.rig, this.renderer.camera, {
+      onEnter: () => this.onEnterVR(),
+      onExit: () => this.onExitVR(),
+      onRightHand: (controller) => this.weapon.setHand(controller),
+      onReload: () => this.weapon.reload(),
+      onSwitchCycle: () => this.cycleWeapon(),
+      onAbility: (slot) => this.useAbility(slot),
+    });
 
     // Seed roster and spawn from the welcome payload.
     for (const p of welcome.players) {
@@ -283,7 +306,8 @@ export class Game {
     this.running = true;
     this.renderer.setPixelHeight(QUALITY_HEIGHT[settings.quality]);
     this.input.requestLock();
-    requestAnimationFrame(() => this.loop());
+    // setAnimationLoop drives both desktop (rAF) and VR (headset-paced) frames.
+    this.renderer.renderer.setAnimationLoop(() => this.frame());
   }
 
   private onMessage(msg: ServerMessage) {
@@ -679,6 +703,38 @@ export class Game {
     }
   }
 
+  /** VR: cycle to the next weapon (there are no number keys). */
+  private cycleWeapon() {
+    const i = WEAPON_CYCLE.indexOf(this.weapon.def.id);
+    this.switchWeapon(WEAPON_CYCLE[(i + 1) % WEAPON_CYCLE.length]);
+  }
+
+  // ---- VR session lifecycle ------------------------------------------------
+
+  private onEnterVR() {
+    this.local.vrMode = true;
+    if (this.vrHud) this.vrHud.group.visible = true;
+    // Entering VR is a user gesture — start audio/music here (no pointer lock).
+    this.sfx.resume();
+    const ctx = this.sfx.getContext();
+    if (ctx && this.music) this.music.connectContext(ctx);
+    if (!this.musicStarted && this.music) {
+      this.musicStarted = true;
+      this.music.start();
+    }
+    this.sfx.startAmbience();
+    this.hidePauseMenu();
+  }
+
+  private onExitVR() {
+    this.local.vrMode = false;
+    if (this.vrHud) this.vrHud.group.visible = false;
+    this.weapon.setHand(null);
+    // Reset the rig so the desktop camera path renders correctly again.
+    this.renderer.rig.position.set(0, 0, 0);
+    this.renderer.rig.rotation.set(0, 0, 0);
+  }
+
   /** Movement modifiers granted by the equipped weapon (katana = fast + double-jump). */
   private applyWeaponMods(id: string) {
     const def = WEAPONS[id];
@@ -694,9 +750,17 @@ export class Game {
 
   private aimRay() {
     const o = new THREE.Vector3();
-    this.renderer.camera.getWorldPosition(o);
     const d = new THREE.Vector3();
-    this.renderer.camera.getWorldDirection(d);
+    const src = this.xr?.presenting ? this.xr.aimSource : null;
+    if (src) {
+      // VR: throw from the controller, along its forward (-Z).
+      src.getWorldPosition(o);
+      const e = src.matrixWorld.elements;
+      d.set(-e[8], -e[9], -e[10]).normalize();
+    } else {
+      this.renderer.camera.getWorldPosition(o);
+      this.renderer.camera.getWorldDirection(d);
+    }
     return { o: { x: o.x, y: o.y, z: o.z }, d: { x: d.x, y: d.y, z: d.z } };
   }
 
@@ -928,15 +992,18 @@ export class Game {
     this.deathTracer = null;
   }
 
-  private loop() {
-    if (!this.running) return;
-    const now = performance.now();
-
-    // Optional frame cap (vsync/refresh-rate stand-in).
-    const cap = settings.fpsCap;
-    if (cap > 0 && now - this.lastFrame < 1000 / cap - 0.3) {
-      requestAnimationFrame(() => this.loop());
+  private frame() {
+    if (!this.running) {
+      this.renderer.renderer.setAnimationLoop(null);
       return;
+    }
+    const now = performance.now();
+    const presenting = this.xr?.presenting ?? false;
+
+    // Optional frame cap (desktop only — VR must run at the headset's refresh).
+    const cap = settings.fpsCap;
+    if (!presenting && cap > 0 && now - this.lastFrame < 1000 / cap - 0.3) {
+      return; // setAnimationLoop will call us again next tick
     }
 
     let dt = (now - this.lastFrame) / 1000;
@@ -945,6 +1012,17 @@ export class Game {
 
     this.fps = this.fps * 0.9 + (1 / Math.max(dt, 0.001)) * 0.1;
     this.hud.setFps(settings.showFps ? Math.round(this.fps) : null);
+
+    // VR: poll controllers, then read head world yaw/pitch so locomotion is
+    // head-relative and remote avatars aim where the headset looks.
+    if (presenting && this.xr) {
+      this.xr.poll(dt);
+      const fwd = new THREE.Vector3();
+      this.renderer.camera.getWorldDirection(fwd);
+      this.local.yaw = Math.atan2(-fwd.x, -fwd.z);
+      this.local.pitch = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
+    }
+    const inp: LoopInput = presenting && this.xr ? this.xr : this.input;
 
     // Update 3D audio listener to match the camera.
     {
@@ -955,18 +1033,26 @@ export class Game {
       this.sfx.updateListener(camPos.x, camPos.y, camPos.z, camFwd.x, camFwd.y, camFwd.z);
     }
 
-    // Look — sensitivity from settings, reduced while scoped.
+    // Look — desktop mouse only (VR look comes from the headset, above).
     this.local.sensMul = settings.sensitivity * (this.weapon.scoped ? settings.scopedSens : 1);
-    if (this.input.locked) {
+    if (!presenting && this.input.locked) {
       const m = this.input.consumeMouse();
       this.local.look(m.dx, m.dy);
     }
 
-    const mv = this.local.update(this.input, dt);
+    const mv = this.local.update(inp, dt);
     if (mv.jumped) this.sfx.jump();
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
     if (mv.padLaunched) this.sfx.pad();
+
+    // VR: place the rig at the player's feet (XrManager owns rig yaw / snap-turn)
+    // and drive the comfort vignette from movement speed.
+    if (presenting && this.xr) {
+      this.renderer.rig.position.set(this.local.pos.x, this.local.pos.y, this.local.pos.z);
+      const sp = Math.hypot(this.local.vel.x, this.local.vel.z);
+      this.xr.setVignette(sp / (MOVE.speed * 1.2));
+    }
 
     // Footsteps: play periodically while moving on the ground (not sliding).
     if (!this.local.dead && this.local.grounded && !this.local.sliding) {
@@ -990,13 +1076,17 @@ export class Game {
       this.sfx.death();
       this.net.send({ t: "fell" });
     }
-    this.weapon.update(dt, !this.inIntermission && this.input.firing && this.input.locked, this.input.ads);
+    const firing = presenting
+      ? this.xr!.firing && !this.inIntermission
+      : !this.inIntermission && this.input.firing && this.input.locked;
+    this.weapon.update(dt, firing, presenting ? false : this.input.ads);
     this.remotes.update(dt);
     this.updateAbilityHud();
+    if (presenting) this.vrHud?.update();
 
     // Bomb mode: E key state + HUD prompts.
     if (this.inBombMode && !this.local.dead && !this.inIntermission) {
-      const useHeld = this.input.useHeld;
+      const useHeld = inp.useHeld;
       if (useHeld !== this.lastUseHeld) {
         this.lastUseHeld = useHeld;
         this.net.send({ t: "use", held: useHeld });
@@ -1019,7 +1109,7 @@ export class Game {
     }
 
     this.hud.toggleScoreboard(
-      this.input.showScores,
+      inp.showScores,
       [...this.roster.values()],
       this.localId,
     );
@@ -1042,7 +1132,7 @@ export class Game {
     }
 
     this.renderer.render();
-    requestAnimationFrame(() => this.loop());
+    // No reschedule — renderer.setAnimationLoop drives the next frame.
   }
 }
 

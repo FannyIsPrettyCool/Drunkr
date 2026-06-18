@@ -1,0 +1,285 @@
+import * as THREE from "three";
+import { VRButton } from "three/examples/jsm/webxr/VRButton.js";
+
+/**
+ * WebXR support for the immersive-VR path. Owns the XR session, the motion
+ * controllers, and the VR control scheme, and exposes the same movement-intent
+ * surface the desktop `Input` does so the game loop can treat them alike.
+ *
+ * Camera model: the camera lives inside `rig` (see Renderer). The headset drives
+ * the camera's local pose; we position the rig at the player's feet and rotate
+ * it with snap-turn (bodyYaw). "Where you look" (head world yaw) is fed back to
+ * the player simulation each frame so locomotion is head-relative.
+ *
+ * WebXR DOM types aren't in our lib set, so session/input-source/gamepad objects
+ * are intentionally loosely typed.
+ */
+
+export interface XrCallbacks {
+  /** Session started — set up VR mode (gun-in-hand, audio, HUD). */
+  onEnter: () => void;
+  /** Session ended — restore the desktop path. */
+  onExit: () => void;
+  /** The right controller is ready; mount the weapon in it. */
+  onRightHand: (controller: THREE.Object3D) => void;
+  onReload: () => void;
+  /** Cycle to the next weapon (no number keys in VR). */
+  onSwitchCycle: () => void;
+  onAbility: (slot: "F" | "C") => void;
+}
+
+/** Thumbstick deadzone and snap-turn step. */
+const DEADZONE = 0.2;
+const SNAP_TURN = Math.PI / 4;
+const MAX_VIGNETTE = 0.55;
+
+// xr-standard gamepad button indices (Quest/Touch and most 6DoF controllers).
+const BTN_TRIGGER = 0;
+const BTN_GRIP = 1;
+const BTN_STICK = 3;
+const BTN_PRIMARY = 4; // A / X
+const BTN_SECONDARY = 5; // B / Y
+
+type Controller = { obj: THREE.Object3D; hand: "left" | "right" | "none" };
+
+export class XrManager {
+  presenting = false;
+
+  private bodyYaw = 0;
+  private controllers: Controller[] = [];
+  private rightObj: THREE.Object3D | null = null;
+  private leftObj: THREE.Object3D | null = null;
+  private leftMarker: THREE.Object3D | null = null;
+
+  // Polled control state (read by the game loop).
+  private mv = { x: 0, z: 0 };
+  private _jump = false;
+  private _crouch = false;
+  private _fire = false;
+  private _use = false;
+  private _scores = false;
+
+  // Rising-edge latches for one-shot actions.
+  private prev: Record<string, boolean> = {};
+
+  private vignette: THREE.Mesh;
+  private vignetteTarget = 0;
+  private vignetteOpacity = 0;
+
+  constructor(
+    private renderer: THREE.WebGLRenderer,
+    private rig: THREE.Group,
+    private camera: THREE.PerspectiveCamera,
+    private cb: XrCallbacks,
+  ) {
+    const xr = this.renderer.xr;
+    xr.enabled = true;
+    try {
+      xr.setReferenceSpaceType("local-floor");
+    } catch {
+      /* older runtimes default to local; height will just be off a bit */
+    }
+    // VR equivalent of the desktop low-res look: a mildly reduced framebuffer.
+    // Full pixelation in a headset is nausea-inducing, so keep it readable.
+    (xr as unknown as { setFramebufferScaleFactor?: (n: number) => void }).setFramebufferScaleFactor?.(0.7);
+
+    // Two controllers, parented to the rig so they move with the player.
+    for (let i = 0; i < 2; i++) {
+      const obj = xr.getController(i);
+      this.rig.add(obj);
+      const entry: Controller = { obj, hand: "none" };
+      const anyObj = obj as unknown as { addEventListener: (t: string, cb: (e: { data?: { handedness?: string } }) => void) => void };
+      anyObj.addEventListener("connected", (e) => {
+        entry.hand = (e.data?.handedness as Controller["hand"]) ?? "none";
+        this.assignHands();
+      });
+      anyObj.addEventListener("disconnected", () => {
+        entry.hand = "none";
+        this.assignHands();
+      });
+      this.controllers.push(entry);
+    }
+
+    xr.addEventListener("sessionstart", () => {
+      this.presenting = true;
+      this.bodyYaw = 0;
+      this.rig.rotation.set(0, 0, 0);
+      this.cb.onEnter();
+    });
+    xr.addEventListener("sessionend", () => {
+      this.presenting = false;
+      this.vignetteOpacity = 0;
+      (this.vignette.material as THREE.Material).opacity = 0;
+      this.vignette.visible = false;
+      this.cb.onExit();
+    });
+
+    // Only surface the "ENTER VR" button when an immersive-VR device is actually
+    // available, so it never clutters normal desktop play.
+    const nav = navigator as unknown as {
+      xr?: { isSessionSupported?: (m: string) => Promise<boolean> };
+    };
+    nav.xr?.isSessionSupported?.("immersive-vr")
+      .then((ok) => { if (ok) document.body.appendChild(VRButton.createButton(this.renderer)); })
+      .catch(() => { /* no XR */ });
+
+    // Comfort vignette: an annulus that darkens the periphery during locomotion.
+    this.vignette = new THREE.Mesh(
+      new THREE.RingGeometry(0.32, 3.0, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0x000000, transparent: true, opacity: 0,
+        side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+      }),
+    );
+    this.vignette.position.set(0, 0, -0.6);
+    this.vignette.renderOrder = 999;
+    this.vignette.visible = false;
+    this.camera.add(this.vignette);
+  }
+
+  /** Decide which controller is the gun hand and wire up laser + left marker. */
+  private assignHands() {
+    const right = this.controllers.find((c) => c.hand === "right")
+      ?? this.controllers.find((c) => c.hand === "none");
+    const left = this.controllers.find((c) => c.hand === "left")
+      ?? this.controllers.find((c) => c !== right && c.hand === "none");
+
+    if (right && right.obj !== this.rightObj) {
+      this.rightObj = right.obj;
+      this.addAimLaser(right.obj);
+      this.cb.onRightHand(right.obj);
+    }
+    if (left && left.obj !== this.leftObj) {
+      this.leftObj = left.obj;
+      this.addLeftMarker(left.obj);
+    }
+  }
+
+  private addAimLaser(obj: THREE.Object3D) {
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+    ]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+      color: 0x18e0ff, transparent: true, opacity: 0.5,
+    }));
+    line.scale.z = 40;
+    obj.add(line);
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff2d9b }),
+    );
+    dot.position.set(0, 0, -3);
+    obj.add(dot);
+  }
+
+  private addLeftMarker(obj: THREE.Object3D) {
+    if (this.leftMarker) this.leftMarker.removeFromParent();
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.06, 0.1),
+      new THREE.MeshStandardMaterial({ color: 0x16182a, emissive: 0x18e0ff, emissiveIntensity: 0.5 }),
+    );
+    obj.add(m);
+    this.leftMarker = m;
+  }
+
+  // --- per-frame ------------------------------------------------------------
+
+  /** Read controller state once per frame. Call before LocalPlayer.update. */
+  poll(dt: number) {
+    const session = (this.renderer.xr as unknown as { getSession?: () => XrSession | null }).getSession?.();
+    let leftGp: XrGamepad | null = null;
+    let rightGp: XrGamepad | null = null;
+    if (session) {
+      for (const src of session.inputSources) {
+        if (!src.gamepad) continue;
+        if (src.handedness === "left") leftGp = src.gamepad;
+        else if (src.handedness === "right") rightGp = src.gamepad;
+        else if (!rightGp) rightGp = src.gamepad;
+        else if (!leftGp) leftGp = src.gamepad;
+      }
+    }
+
+    // Locomotion: left stick (head-relative once Game feeds head yaw to LocalPlayer).
+    const [lx, ly] = this.stick(leftGp);
+    this.mv.x = Math.abs(lx) > DEADZONE ? lx : 0;
+    this.mv.z = Math.abs(ly) > DEADZONE ? ly : 0;
+
+    // Snap turn: right stick X, edge-triggered so one flick = one increment.
+    const [rx] = this.stick(rightGp);
+    if (Math.abs(rx) > 0.7) {
+      if (!this.prev.snap) {
+        this.bodyYaw -= Math.sign(rx) * SNAP_TURN;
+        this.prev.snap = true;
+      }
+    } else if (Math.abs(rx) < 0.3) {
+      this.prev.snap = false;
+    }
+    this.rig.rotation.y = this.bodyYaw;
+
+    // Held buttons.
+    this._fire = this.btn(rightGp, BTN_TRIGGER);
+    this._jump = this.btn(rightGp, BTN_PRIMARY);     // A — hold for bhop
+    this._crouch = this.btn(leftGp, BTN_PRIMARY);    // X
+    this._use = this.btn(leftGp, BTN_STICK);         // left stick press (bomb E)
+    this._scores = this.btn(rightGp, BTN_STICK);     // right stick press
+
+    // One-shot edges.
+    if (this.edge("reload", this.btn(rightGp, BTN_SECONDARY))) this.cb.onReload();    // B
+    if (this.edge("switch", this.btn(leftGp, BTN_SECONDARY))) this.cb.onSwitchCycle(); // Y
+    if (this.edge("abilF", this.btn(leftGp, BTN_GRIP))) this.cb.onAbility("F");
+    if (this.edge("abilC", this.btn(rightGp, BTN_GRIP))) this.cb.onAbility("C");
+
+    // Vignette ease toward the locomotion target.
+    this.vignetteOpacity += (this.vignetteTarget - this.vignetteOpacity) * Math.min(1, 10 * dt);
+    (this.vignette.material as THREE.Material).opacity = this.vignetteOpacity;
+    this.vignette.visible = this.vignetteOpacity > 0.02;
+  }
+
+  /** The gun-hand controller (aim source for grenades/abilities), if connected. */
+  get aimSource(): THREE.Object3D | null {
+    return this.rightObj;
+  }
+
+  /** Drive the comfort vignette from normalized move speed (0..1). */
+  setVignette(speed01: number) {
+    this.vignetteTarget = Math.min(1, Math.max(0, speed01)) * MAX_VIGNETTE;
+  }
+
+  private stick(gp: XrGamepad | null): [number, number] {
+    if (!gp) return [0, 0];
+    const a = gp.axes;
+    // xr-standard puts the thumbstick at axes[2]/[3]; fall back to [0]/[1].
+    if (a.length >= 4) return [a[2] ?? 0, a[3] ?? 0];
+    return [a[0] ?? 0, a[1] ?? 0];
+  }
+
+  private btn(gp: XrGamepad | null, i: number): boolean {
+    return gp?.buttons?.[i]?.pressed ?? false;
+  }
+
+  private edge(key: string, pressed: boolean): boolean {
+    const fired = pressed && !this.prev[key];
+    this.prev[key] = pressed;
+    return fired;
+  }
+
+  // --- desktop-Input-compatible surface (read by the game loop) -------------
+
+  moveAxis(): { x: number; z: number } {
+    return { x: this.mv.x, z: this.mv.z };
+  }
+  get jumping(): boolean { return this._jump; }
+  get crouching(): boolean { return this._crouch; }
+  get firing(): boolean { return this._fire; }
+  get ads(): boolean { return false; }
+  get useHeld(): boolean { return this._use; }
+  get showScores(): boolean { return this._scores; }
+  get locked(): boolean { return this.presenting; }
+  consumeMouse(): { dx: number; dy: number } { return { dx: 0, dy: 0 }; }
+}
+
+// Minimal local shapes for the WebXR objects we touch.
+interface XrGamepad { axes: number[]; buttons: { pressed: boolean }[]; }
+interface XrInputSource { handedness: string; gamepad: XrGamepad | null; }
+interface XrSession { inputSources: Iterable<XrInputSource>; }
