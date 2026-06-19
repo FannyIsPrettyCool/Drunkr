@@ -714,6 +714,13 @@ export class Game {
   private onEnterVR() {
     this.local.vrMode = true;
     if (this.vrHud) this.vrHud.group.visible = true;
+    // Place the rig at the player and clear the camera's stale desktop pose so
+    // the very first headset frame is at the right spot (the headset then drives
+    // the camera's local pose within the rig).
+    this.renderer.rig.position.set(this.local.pos.x, this.local.pos.y, this.local.pos.z);
+    this.renderer.rig.rotation.set(0, 0, 0);
+    this.renderer.camera.position.set(0, 0, 0);
+    this.renderer.camera.quaternion.set(0, 0, 0, 1);
     // Entering VR is a user gesture — start audio/music here (no pointer lock).
     this.sfx.resume();
     const ctx = this.sfx.getContext();

@@ -74,6 +74,11 @@ export class XrManager {
   ) {
     const xr = this.renderer.xr;
     xr.enabled = true;
+    // Proactively move the GL context onto the XR-compatible GPU now (at game
+    // start), so entering a session later doesn't trigger a context-losing GPU
+    // switch. Complements the xrCompatible flag set at context creation.
+    const gl = this.renderer.getContext() as { makeXRCompatible?: () => Promise<void> };
+    gl.makeXRCompatible?.().catch(() => { /* no XR device / already compatible */ });
     try {
       xr.setReferenceSpaceType("local-floor");
     } catch {
@@ -104,6 +109,9 @@ export class XrManager {
       this.presenting = true;
       this.bodyYaw = 0;
       this.rig.rotation.set(0, 0, 0);
+      const attrs = this.renderer.getContext().getContextAttributes?.();
+      console.log("[VR] session start — xrCompatible:", attrs?.xrCompatible,
+        "isPresenting:", (xr as unknown as { isPresenting?: boolean }).isPresenting);
       this.cb.onEnter();
     });
     xr.addEventListener("sessionend", () => {
@@ -218,17 +226,22 @@ export class XrManager {
     this.rig.rotation.y = this.bodyYaw;
 
     // Held buttons.
-    this._fire = this.btn(rightGp, BTN_TRIGGER);
-    this._jump = this.btn(rightGp, BTN_PRIMARY);     // A — hold for bhop
-    this._crouch = this.btn(leftGp, BTN_PRIMARY);    // X
-    this._use = this.btn(leftGp, BTN_STICK);         // left stick press (bomb E)
-    this._scores = this.btn(rightGp, BTN_STICK);     // right stick press
+    this._fire = this.btn(rightGp, BTN_TRIGGER);     // right trigger
+    this._jump = this.btn(rightGp, BTN_PRIMARY);     // right A — hold for bhop
+    this._crouch = this.btn(leftGp, BTN_TRIGGER);    // left trigger — hold to crouch/slide
+    this._use = this.gripFirm(leftGp);               // left grip squeeze — bomb plant/defuse
+    this._scores = this.btn(leftGp, BTN_STICK);      // left stick press — scoreboard
 
-    // One-shot edges.
-    if (this.edge("reload", this.btn(rightGp, BTN_SECONDARY))) this.cb.onReload();    // B
-    if (this.edge("switch", this.btn(leftGp, BTN_SECONDARY))) this.cb.onSwitchCycle(); // Y
-    if (this.edge("abilF", this.btn(leftGp, BTN_GRIP))) this.cb.onAbility("F");
-    if (this.edge("abilC", this.btn(rightGp, BTN_GRIP))) this.cb.onAbility("C");
+    // One-shot edges. Abilities are on the face buttons (a real mechanical
+    // press), NOT the force-sensitive grips: resting your hand on an Index
+    // controller squeezes the grip enough to fire them otherwise. Grips are used
+    // only for infrequent actions and require a firm squeeze (see gripFirm).
+    if (this.edge("abilF", this.btn(leftGp, BTN_PRIMARY))) this.cb.onAbility("F");     // left A
+    if (this.edge("abilC", this.btn(rightGp, BTN_SECONDARY))) this.cb.onAbility("C");  // right B
+    if (this.edge("reload", this.btn(leftGp, BTN_SECONDARY))) this.cb.onReload();      // left B
+    if (this.edge("switch", this.gripFirm(rightGp))) this.cb.onSwitchCycle();          // right grip
+
+    this.diagnostics(leftGp, rightGp);
 
     // Vignette ease toward the locomotion target.
     this.vignetteOpacity += (this.vignetteTarget - this.vignetteOpacity) * Math.min(1, 10 * dt);
@@ -258,6 +271,31 @@ export class XrManager {
     return gp?.buttons?.[i]?.pressed ?? false;
   }
 
+  /** A firm grip squeeze (force past a threshold) so a resting hand won't fire. */
+  private gripFirm(gp: XrGamepad | null): boolean {
+    return (gp?.buttons?.[BTN_GRIP]?.value ?? 0) > 0.85;
+  }
+
+  /**
+   * Periodic [VR] console diagnostics (visible in the desktop DevTools console).
+   * draw-calls > 0 means the scene is rendering; `cam`/`rig` tell us the camera
+   * is in the map; `presenting` confirms the headset session is live.
+   */
+  private diagFrame = 0;
+  private diagnostics(leftGp: XrGamepad | null, rightGp: XrGamepad | null) {
+    if ((this.diagFrame++ % 120) !== 0) return;
+    const cam = new THREE.Vector3();
+    this.camera.getWorldPosition(cam);
+    const xr = this.renderer.xr as unknown as { isPresenting?: boolean };
+    console.log("[VR]", {
+      presenting: xr.isPresenting,
+      drawCalls: this.renderer.info.render.calls,
+      cam: cam.toArray().map((n) => +n.toFixed(1)),
+      rig: this.rig.position.toArray().map((n) => +n.toFixed(1)),
+      pads: { left: !!leftGp, right: !!rightGp },
+    });
+  }
+
   private edge(key: string, pressed: boolean): boolean {
     const fired = pressed && !this.prev[key];
     this.prev[key] = pressed;
@@ -280,6 +318,6 @@ export class XrManager {
 }
 
 // Minimal local shapes for the WebXR objects we touch.
-interface XrGamepad { axes: number[]; buttons: { pressed: boolean }[]; }
+interface XrGamepad { axes: number[]; buttons: { pressed: boolean; value: number }[]; }
 interface XrInputSource { handedness: string; gamepad: XrGamepad | null; }
 interface XrSession { inputSources: Iterable<XrInputSource>; }

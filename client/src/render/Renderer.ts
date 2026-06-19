@@ -22,11 +22,22 @@ export class Renderer {
   private pixelHeight = 360;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: false,
-      powerPreference: "high-performance",
-    });
+    // Create the WebGL context up front as xr-compatible. Otherwise Three.js
+    // makes a normal context and only calls makeXRCompatible() when entering VR,
+    // which on multi-GPU machines (esp. with powerPreference "high-performance")
+    // can leave frames rendering to a context the headset compositor never sees
+    // — a black headset while controllers/input keep working. Fall back to the
+    // default path if WebGL2 isn't available.
+    const glAttrs = {
+      antialias: false, alpha: false, depth: true, stencil: false,
+      powerPreference: "high-performance", xrCompatible: true,
+    } as WebGLContextAttributes;
+    const gl = canvas.getContext("webgl2", glAttrs) as WebGL2RenderingContext | null;
+    this.renderer = new THREE.WebGLRenderer(
+      gl
+        ? { canvas, context: gl }
+        : { canvas, antialias: false, powerPreference: "high-performance" },
+    );
     this.renderer.setPixelRatio(1);
 
     this.scene = new THREE.Scene();
