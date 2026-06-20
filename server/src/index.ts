@@ -1401,17 +1401,22 @@ const httpServer = http.createServer(async (req, res) => {
   // too, where path.normalize would switch to backslashes. No index.html
   // fallback — a missing asset must 404, not return HTML (which can't decode).
   if (reqPath.startsWith("/assets/")) {
-    // Drop the prefix, then normalize + strip any ".." so we can't escape the dir.
+    // Drop the prefix, normalize, strip ".." to prevent escaping.
     const sub = normalize(reqPath.slice("/assets/".length)).replace(/^(\.\.[/\\])+/, "");
-    const assetFile = join(SHARED_ASSETS_DIR, sub);
-    try {
-      const body = await readFile(assetFile);
-      res.writeHead(200, { "content-type": MIME[extname(assetFile)] ?? "application/octet-stream" });
-      res.end(body);
-    } catch {
-      res.writeHead(404, { "content-type": "text/plain" });
-      res.end("Not found");
+    // Vite bundles JS/CSS into client/dist/assets/ — check there first.
+    // Audio/media live in shared/assets/ — fall back there if not in the bundle.
+    // Note: CLIENT_DIR is client/dist so bundle path is CLIENT_DIR/assets/sub,
+    //       but SHARED_ASSETS_DIR is already shared/assets so its path is just SHARED_ASSETS_DIR/sub.
+    for (const candidate of [join(CLIENT_DIR, "assets", sub), join(SHARED_ASSETS_DIR, sub)]) {
+      try {
+        const body = await readFile(candidate);
+        res.writeHead(200, { "content-type": MIME[extname(candidate)] ?? "application/octet-stream" });
+        res.end(body);
+        return;
+      } catch { /* not in this dir, try next */ }
     }
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("Not found");
     return;
   }
 
