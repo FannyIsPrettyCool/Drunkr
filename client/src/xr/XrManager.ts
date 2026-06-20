@@ -184,6 +184,11 @@ export class XrManager {
     }).xr;
     if (!xrNav?.requestSession) return;
     try {
+      // Switch the drawing buffer to full resolution before presenting. The
+      // desktop uses a tiny low-res buffer (CSS-upscaled pixelation), which is an
+      // unusual setup that can desync the XR layer framebuffer / mirror. Safe to
+      // call here — the session isn't presenting yet, so setSize isn't blocked.
+      this.renderer.setSize(window.innerWidth, window.innerHeight, false);
       // No `layers` — forces three's classic XRWebGLLayer compositing path.
       const session = await xrNav.requestSession("immersive-vr", {
         optionalFeatures: ["local-floor", "bounded-floor"],

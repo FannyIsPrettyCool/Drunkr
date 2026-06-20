@@ -740,6 +740,8 @@ export class Game {
     // Reset the rig so the desktop camera path renders correctly again.
     this.renderer.rig.position.set(0, 0, 0);
     this.renderer.rig.rotation.set(0, 0, 0);
+    // Restore the desktop low-res pixelation buffer (VR rendered full-res).
+    this.renderer.setPixelHeight(QUALITY_HEIGHT[settings.quality]);
   }
 
   /** Movement modifiers granted by the equipped weapon (katana = fast + double-jump). */
