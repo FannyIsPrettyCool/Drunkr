@@ -350,9 +350,14 @@ export class XrManager {
     if ((this.diagFrame++ % 120) !== 0) return;
     const cam = new THREE.Vector3();
     this.camera.getWorldPosition(cam);
-    const xr = this.renderer.xr as unknown as { isPresenting?: boolean };
+    const xr = this.renderer.xr as unknown as {
+      isPresenting?: boolean;
+      getSession?: () => { renderState?: { baseLayer?: unknown; layers?: unknown[] } } | null;
+    };
+    const rs = xr.getSession?.()?.renderState;
     console.log("[VR]", {
       presenting: xr.isPresenting,
+      path: rs?.baseLayer ? "baseLayer(good)" : (rs?.layers?.length ? "projLayer(bad)" : "?"),
       drawCalls: this.renderer.info.render.calls,
       cam: cam.toArray().map((n) => +n.toFixed(1)),
       rig: this.rig.position.toArray().map((n) => +n.toFixed(1)),
