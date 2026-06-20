@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { VRButton } from "three/examples/jsm/webxr/VRButton.js";
 
 /**
  * WebXR support for the immersive-VR path. Owns the XR session, the motion
@@ -65,6 +64,7 @@ export class XrManager {
   private vignette: THREE.Mesh;
   private vignetteTarget = 0;
   private vignetteOpacity = 0;
+  private button: HTMLButtonElement | null = null;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -84,9 +84,9 @@ export class XrManager {
     } catch {
       /* older runtimes default to local; height will just be off a bit */
     }
-    // VR equivalent of the desktop low-res look: a mildly reduced framebuffer.
-    // Full pixelation in a headset is nausea-inducing, so keep it readable.
-    (xr as unknown as { setFramebufferScaleFactor?: (n: number) => void }).setFramebufferScaleFactor?.(0.7);
+    // Headset resolution = native (1.0). Don't reduce it — keep this variable out
+    // of the rendering path while we get display working.
+    (xr as unknown as { setFramebufferScaleFactor?: (n: number) => void }).setFramebufferScaleFactor?.(1.0);
 
     // Two controllers, parented to the rig so they move with the player.
     for (let i = 0; i < 2; i++) {
@@ -112,6 +112,7 @@ export class XrManager {
       const attrs = this.renderer.getContext().getContextAttributes?.();
       console.log("[VR] session start — xrCompatible:", attrs?.xrCompatible,
         "isPresenting:", (xr as unknown as { isPresenting?: boolean }).isPresenting);
+      if (this.button) this.button.textContent = "EXIT VR";
       this.cb.onEnter();
     });
     xr.addEventListener("sessionend", () => {
@@ -119,17 +120,11 @@ export class XrManager {
       this.vignetteOpacity = 0;
       (this.vignette.material as THREE.Material).opacity = 0;
       this.vignette.visible = false;
+      if (this.button) this.button.textContent = "ENTER VR";
       this.cb.onExit();
     });
 
-    // Only surface the "ENTER VR" button when an immersive-VR device is actually
-    // available, so it never clutters normal desktop play.
-    const nav = navigator as unknown as {
-      xr?: { isSessionSupported?: (m: string) => Promise<boolean> };
-    };
-    nav.xr?.isSessionSupported?.("immersive-vr")
-      .then((ok) => { if (ok) document.body.appendChild(VRButton.createButton(this.renderer)); })
-      .catch(() => { /* no XR */ });
+    this.setupButton();
 
     // Comfort vignette: an annulus that darkens the periphery during locomotion.
     this.vignette = new THREE.Mesh(
@@ -143,6 +138,60 @@ export class XrManager {
     this.vignette.renderOrder = 999;
     this.vignette.visible = false;
     this.camera.add(this.vignette);
+  }
+
+  /**
+   * Add an "ENTER VR" button (only when immersive-VR is supported). We request
+   * the session ourselves instead of using three's VRButton because VRButton
+   * hard-codes the `layers` feature, which makes three use the XRProjectionLayer
+   * path — that fails to composite on some SteamVR/Chrome builds (a black headset
+   * even though frames render). Omitting `layers` keeps three on the classic,
+   * widely-compatible XRWebGLLayer path.
+   */
+  private setupButton() {
+    const xrNav = (navigator as unknown as {
+      xr?: { isSessionSupported?: (m: string) => Promise<boolean> };
+    }).xr;
+    xrNav?.isSessionSupported?.("immersive-vr").then((ok) => {
+      if (!ok) return;
+      const b = document.createElement("button");
+      b.id = "VRButton";
+      b.textContent = "ENTER VR";
+      Object.assign(b.style, {
+        position: "absolute", bottom: "20px", left: "calc(50% - 60px)", width: "120px",
+        padding: "12px 6px", border: "1px solid #18e0ff", borderRadius: "4px",
+        background: "rgba(5,6,12,0.6)", color: "#18e0ff",
+        font: "bold 13px monospace", letterSpacing: "0.12em", textAlign: "center",
+        cursor: "pointer", zIndex: "999",
+      } as Partial<CSSStyleDeclaration>);
+      b.onclick = () => void this.toggleSession();
+      document.body.appendChild(b);
+      this.button = b;
+    }).catch(() => { /* no XR */ });
+  }
+
+  private async toggleSession() {
+    const xr = this.renderer.xr as unknown as {
+      getSession?: () => { end?: () => void } | null;
+      setSession?: (s: unknown) => Promise<void>;
+    };
+    if (this.presenting) {
+      xr.getSession?.()?.end?.();
+      return;
+    }
+    const xrNav = (navigator as unknown as {
+      xr?: { requestSession?: (m: string, o?: unknown) => Promise<unknown> };
+    }).xr;
+    if (!xrNav?.requestSession) return;
+    try {
+      // No `layers` — forces three's classic XRWebGLLayer compositing path.
+      const session = await xrNav.requestSession("immersive-vr", {
+        optionalFeatures: ["local-floor", "bounded-floor"],
+      });
+      await xr.setSession?.(session);
+    } catch (e) {
+      console.warn("[VR] requestSession failed", e);
+    }
   }
 
   /** Decide which controller is the gun hand and wire up laser + left marker. */

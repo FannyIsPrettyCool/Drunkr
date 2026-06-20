@@ -77,6 +77,9 @@ export class Renderer {
   }
 
   private resize() {
+    // Three.js owns the framebuffer while a headset is presenting; setSize is a
+    // no-op (and warns) then, so skip it.
+    if (this.renderer.xr.isPresenting) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
     const aspect = w / h;
