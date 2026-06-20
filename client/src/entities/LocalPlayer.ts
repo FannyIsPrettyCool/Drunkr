@@ -7,7 +7,16 @@ import {
   type MoveState,
   type CollisionWorld,
 } from "@drunkr/shared";
-import type { Input } from "../input/Input.js";
+/**
+ * The minimal movement-intent surface the player simulation needs. Both the
+ * keyboard/mouse `Input` and the VR `XrManager` satisfy this structurally, so
+ * the same movement code runs for desktop and VR.
+ */
+export interface PlayerInput {
+  moveAxis(): { x: number; z: number };
+  readonly jumping: boolean;
+  readonly crouching: boolean;
+}
 
 const SENSITIVITY = 0.0022;
 const PITCH_LIMIT = Math.PI / 2 - 0.01;
@@ -34,6 +43,8 @@ export class LocalPlayer {
   canSlide = true;
   /** Look-sensitivity multiplier (settings + scoped), updated by Game. */
   sensMul = 1;
+  /** In VR the headset + rig own the camera, so updateCamera leaves it alone. */
+  vrMode = false;
 
   /** Dash ability cooldown (s remaining). */
   dashCooldown = 0;
@@ -112,7 +123,7 @@ export class LocalPlayer {
     return true;
   }
 
-  update(input: Input, dt: number): { slideStarted: boolean; landed: boolean; jumped: boolean; padLaunched: boolean } {
+  update(input: PlayerInput, dt: number): { slideStarted: boolean; landed: boolean; jumped: boolean; padLaunched: boolean } {
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
 
     if (this.dead) {
@@ -185,6 +196,9 @@ export class LocalPlayer {
 
   private updateCamera(speed: number, dt: number) {
     this.recoil.multiplyScalar(0.86);
+    // In VR the headset drives the camera's local pose and the rig is positioned
+    // by Game; don't fight it with desktop eye-height/bob/recoil camera writes.
+    if (this.vrMode) return;
 
     const targetEye = this.crouching || this.sliding ? MOVE.crouchEyeHeight : MOVE.eyeHeight;
     this.eye += (targetEye - this.eye) * Math.min(1, 14 * dt);

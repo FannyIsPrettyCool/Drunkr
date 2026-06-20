@@ -10,16 +10,34 @@ export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * The player "rig": the camera lives inside this group. On desktop it stays
+   * at the identity so the camera's local transform is its world transform
+   * (unchanged behaviour). In VR the headset drives the camera's local pose and
+   * we move/rotate this rig instead (feet position + snap-turn yaw).
+   */
+  readonly rig: THREE.Group;
 
   /** Target internal vertical resolution; lower = chunkier pixels. */
   private pixelHeight = 360;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: false,
-      powerPreference: "high-performance",
-    });
+    // Create the WebGL context up front as xr-compatible. Otherwise Three.js
+    // makes a normal context and only calls makeXRCompatible() when entering VR,
+    // which on multi-GPU machines (esp. with powerPreference "high-performance")
+    // can leave frames rendering to a context the headset compositor never sees
+    // — a black headset while controllers/input keep working. Fall back to the
+    // default path if WebGL2 isn't available.
+    const glAttrs = {
+      antialias: false, alpha: false, depth: true, stencil: false,
+      powerPreference: "high-performance", xrCompatible: true,
+    } as WebGLContextAttributes;
+    const gl = canvas.getContext("webgl2", glAttrs) as WebGL2RenderingContext | null;
+    this.renderer = new THREE.WebGLRenderer(
+      gl
+        ? { canvas, context: gl }
+        : { canvas, antialias: false, powerPreference: "high-performance" },
+    );
     this.renderer.setPixelRatio(1);
 
     this.scene = new THREE.Scene();
@@ -28,6 +46,9 @@ export class Renderer {
     this.scene.fog = new THREE.Fog(0x05060c, 120, 320);
 
     this.camera = new THREE.PerspectiveCamera(82, 1, 0.05, 1000);
+    this.rig = new THREE.Group();
+    this.rig.add(this.camera);
+    this.scene.add(this.rig);
 
     this.setupLights();
     this.resize();
@@ -56,6 +77,9 @@ export class Renderer {
   }
 
   private resize() {
+    // Three.js owns the framebuffer while a headset is presenting; setSize is a
+    // no-op (and warns) then, so skip it.
+    if (this.renderer.xr.isPresenting) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
     const aspect = w / h;
