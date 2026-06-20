@@ -112,6 +112,16 @@ export class XrManager {
       const attrs = this.renderer.getContext().getContextAttributes?.();
       console.log("[VR] session start — xrCompatible:", attrs?.xrCompatible,
         "isPresenting:", (xr as unknown as { isPresenting?: boolean }).isPresenting);
+      // Verify which compositing path three actually chose. A real baseLayer with
+      // sane dimensions = the classic XRWebGLLayer path (what we want). "NONE"
+      // means three is on the XRProjectionLayer path despite our request.
+      const sess = (xr as unknown as {
+        getSession?: () => { renderState?: { baseLayer?: { framebufferWidth?: number; framebufferHeight?: number; framebuffer?: unknown }; layers?: unknown[] } } | null;
+      }).getSession?.();
+      const bl = sess?.renderState?.baseLayer;
+      console.log("[VR] baseLayer:", bl
+        ? { w: bl.framebufferWidth, h: bl.framebufferHeight, hasFB: !!bl.framebuffer }
+        : "NONE — projection-layer path", "layers:", sess?.renderState?.layers?.length ?? 0);
       if (this.button) this.button.textContent = "EXIT VR";
       this.cb.onEnter();
     });
