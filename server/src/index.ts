@@ -54,13 +54,24 @@ const WEAPON_SWITCH_MS = 250;
 
 const weaponOf = (a: Actor) => WEAPONS[a.state.weapon] ?? WEAPONS[DEFAULT_WEAPON];
 
-/** Bot difficulty presets — these make bots fair / beatable. */
+/**
+ * Bot difficulty presets — tuned to be fair / beatable.
+ *  - `aimLerp`  how fast the bot swings its aim onto a target (snappiness).
+ *  - `spread`   base random aim error (radians) added to every shot.
+ *  - `aimErr`   extra baseline error so close range isn't a guaranteed kill.
+ *  - `react`    reaction window (ms) before a *freshly spotted* target is shot.
+ *  - `burst`    extra pause (ms) inserted between bursts of an auto weapon.
+ *  - `range`    max distance (m) at which a bot will notice a target.
+ *  - `fovCos`   cosine of the view-cone half-angle: a bot only "sees" targets
+ *               in front of it (eyesight), not behind. Lower = wider awareness.
+ */
 const BOT_DIFF: Record<BotDifficulty, {
-  aimLerp: number; spread: number; react: [number, number]; fire: [number, number]; range: number;
+  aimLerp: number; spread: number; aimErr: number;
+  react: [number, number]; burst: [number, number]; range: number; fovCos: number;
 }> = {
-  easy:   { aimLerp: 0.06, spread: 0.14, react: [450, 850], fire: [320, 560], range: 40 },
-  normal: { aimLerp: 0.11, spread: 0.10, react: [300, 560], fire: [220, 380], range: 60 },
-  hard:   { aimLerp: 0.18, spread: 0.06, react: [170, 320], fire: [130, 230], range: 200 },
+  easy:   { aimLerp: 0.05, spread: 0.15, aimErr: 0.09, react: [550, 950], burst: [550, 1100], range: 38, fovCos: 0.40 },
+  normal: { aimLerp: 0.09, spread: 0.10, aimErr: 0.06, react: [380, 680], burst: [400, 850],  range: 55, fovCos: 0.32 },
+  hard:   { aimLerp: 0.15, spread: 0.06, aimErr: 0.035, react: [240, 440], burst: [260, 560],  range: 90, fovCos: 0.22 },
 };
 
 const BOT_NAMES = ["GHOST", "VIPER", "NEON", "RAZR", "BYTE", "HEX", "FLUX", "ZERO", "DRX", "KILO"];
@@ -76,6 +87,10 @@ interface BotAI {
   retargetAt: number;
   nextShotAt: number;
   reactAt: number;
+  /** Whether the current target was visible last tick (for re-peek reaction). */
+  targetWasVisible: boolean;
+  /** Rounds left in the current auto-fire burst before a discipline pause. */
+  burstLeft: number;
   // Movement sub-state for the shared stepMovement model.
   sliding: boolean;
   slideTime: number;
@@ -1058,6 +1073,7 @@ function spawnBot(room: Room) {
     ai: {
       goal: null, pathGoal: null, path: [], pathIdx: 0, repathAt: 0,
       targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
+      targetWasVisible: false, burstLeft: 0,
       sliding: false, slideTime: 0, jumpsUsed: 0,
       ammo: (WEAPONS[state.weapon] ?? WEAPONS[DEFAULT_WEAPON]).magazine, reloadUntil: 0,
       strafeDir: Math.random() < 0.5 ? 1 : -1, strafeUntil: 0,
@@ -1101,8 +1117,15 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
         const theirTeam = room.bombTeams.get(id);
         if (myTeam && theirTeam && myTeam === theirTeam) continue;
       }
-      const dist = Math.hypot(a.state.pos.x - me.pos.x, a.state.pos.z - me.pos.z);
+      const dx = a.state.pos.x - me.pos.x, dz = a.state.pos.z - me.pos.z;
+      const dist = Math.hypot(dx, dz);
       if (dist > diff.range) continue;
+      // Eyesight: a bot only notices targets within its forward view cone — no
+      // eyes in the back of the head. Point-blank threats (≤5m) are always felt.
+      if (dist > 5) {
+        const facing = -((dx / (dist || 1)) * Math.sin(me.yaw) + (dz / (dist || 1)) * Math.cos(me.yaw));
+        if (facing < diff.fovCos) continue;
+      }
       if (room.world.segmentBlocked(eye(me), chest(a.state))) continue;
       if (dist < bestDist) { bestDist = dist; bestId = id; }
     }
@@ -1115,6 +1138,14 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   const target = ai.targetId >= 0 ? room.actors.get(ai.targetId) : undefined;
   const targetVisible =
     !!target && !target.state.dead && !room.world.segmentBlocked(eye(me), chest(target.state));
+
+  // Re-peek reaction: when a target steps back into view (after cover broke the
+  // sightline) the bot has to re-acquire before it can fire again — it can't
+  // pre-fire the instant a head pokes out.
+  if (targetVisible && !ai.targetWasVisible) {
+    ai.reactAt = Math.max(ai.reactAt, now + rng(diff.react[0] * 0.5, diff.react[1] * 0.5));
+  }
+  ai.targetWasVisible = targetVisible;
 
   // === AIM TOWARD TARGET ===
   // Yaw convention: yaw=0 means model looks in -Z (same as local player camera at yaw=0).
@@ -1337,7 +1368,11 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
     // Negate because yaw now uses atan2(-dx,-dz), so forward = (-sin(yaw), -cos(yaw)).
     const aimDot = -(dx * Math.sin(me.yaw) + dz * Math.cos(me.yaw));
     const sniper = w.id === "sniper";
-    const spread = diff.spread + (sniper ? 0.04 : w.id === "shotgun" ? 0.07 : 0);
+    // Bots flail a bit up close (a target filling the screen would otherwise be
+    // a guaranteed hit), so spread grows as the target gets closer.
+    const closePenalty = targetDist < 14 ? (1 - targetDist / 14) * 0.06 : 0;
+    const spread =
+      diff.spread + diff.aimErr + closePenalty + (sniper ? 0.02 : w.id === "shotgun" ? 0.06 : 0);
     if (aimDot > (sniper ? 0.985 : 0.96)) {
       const pellets = w.pellets ?? 1;
       const shotDirs: Vec3[] = [];
@@ -1350,11 +1385,27 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
       }
       handleShoot(room, bot, o, shotDirs, !!w.melee);
       ai.ammo--;
+      // Cadence is the weapon's *real* fire rate (so the AK rattles, the sniper
+      // and shotgun are slow), not an arbitrary window. Auto weapons fire short
+      // bursts with a discipline pause so they aren't perfect lasers.
+      const cadence = 60_000 / w.fireRate;
       if (w.magazine > 0 && ai.ammo <= 0) {
         ai.reloadUntil = now + w.reloadMs;
         ai.ammo = w.magazine;
+        // Respect the weapon's cycle time too (a 1-round mag like the sniper must
+        // not fire faster than its fire rate just because its reload is shorter).
+        ai.nextShotAt = now + Math.max(w.reloadMs, cadence);
+        ai.burstLeft = 0;
+      } else if (w.auto) {
+        if (ai.burstLeft <= 0) {
+          ai.burstLeft = Math.floor(rng(3, 8));
+          ai.nextShotAt = now + cadence + rng(diff.burst[0], diff.burst[1]);
+        } else {
+          ai.burstLeft--;
+          ai.nextShotAt = now + cadence * rng(1.0, 1.3);
+        }
       } else {
-        ai.nextShotAt = now + Math.max(rng(diff.fire[0], diff.fire[1]), 60_000 / w.fireRate);
+        ai.nextShotAt = now + cadence * rng(1.0, 1.25);
       }
     }
   }

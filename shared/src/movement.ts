@@ -124,7 +124,7 @@ export function stepMovement(
     // horizontal resolution would fling them to the arena edge.
     if (
       ry !== null && state.vel.y <= 1 &&
-      state.pos.y >= ry - 1.4 && state.pos.y <= ry + 0.5 &&
+      state.pos.y >= ry - 0.7 && state.pos.y <= ry + 0.5 &&
       (!state.grounded || ry >= state.pos.y)
     ) {
       state.pos.y = ry;
