@@ -168,6 +168,12 @@ export interface C_Use {
   held: boolean;
 }
 
+/** In-game text chat: broadcast to all players in the room. Not persisted. */
+export interface C_Chat {
+  t: "chat";
+  text: string;
+}
+
 /** Admin-panel command. The server ignores it unless the actor has admin. */
 export interface C_Admin {
   t: "admin";
@@ -196,7 +202,8 @@ export type ClientMessage =
   | C_Ability
   | C_VoteMap
   | C_Use
-  | C_Admin;
+  | C_Admin
+  | C_Chat;
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -357,6 +364,13 @@ export interface S_BombRoundEnd {
   scoreCT: number;
 }
 
+/** In-game chat message broadcast to all players in the room. */
+export interface S_Chat {
+  t: "chat";
+  name: string;
+  text: string;
+}
+
 /** Tells a client its admin privilege changed (un/locks the admin panel). */
 export interface S_Admin {
   t: "admin";
@@ -414,7 +428,8 @@ export type ServerMessage =
   | S_Toast
   | S_Teleport
   | S_Impulse
-  | S_Slow;
+  | S_Slow
+  | S_Chat;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);

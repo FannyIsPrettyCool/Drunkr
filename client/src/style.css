@@ -1199,3 +1199,70 @@ body {
   .ap-cols { grid-template-columns: 1fr; }
 }
 
+/* --- In-game chat log (bottom-left, fades out automatically) --- */
+#chat-log {
+  position: absolute;
+  bottom: 12.5rem;
+  left: 1.2rem;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  pointer-events: none;
+}
+.chat-line {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--fg);
+  text-shadow: 0 0 4px #000, 0 0 2px #000;
+  background: rgba(5, 6, 12, 0.5);
+  padding: 0.12rem 0.45rem;
+  animation: chatfade 8s ease-out forwards;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.chat-line .chat-name { color: var(--neon-cyan); }
+@keyframes chatfade {
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* --- Chat input bar (shown while typing) --- */
+#chat-bar {
+  position: fixed;
+  bottom: 2.4rem;
+  left: 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 20;
+  pointer-events: auto;
+  max-width: 480px;
+}
+.chat-prompt {
+  font-size: 0.78rem;
+  color: var(--neon-cyan);
+  white-space: nowrap;
+  letter-spacing: 0.08rem;
+  text-shadow: 0 0 8px var(--neon-cyan);
+}
+#chat-input {
+  flex: 1;
+  padding: 0.38rem 0.7rem;
+  background: rgba(5, 6, 12, 0.9);
+  border: 1px solid var(--neon-cyan);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.88rem;
+  outline: none;
+  letter-spacing: 0.04rem;
+  min-width: 320px;
+}
+#chat-input:focus {
+  border-color: var(--neon-pink);
+  box-shadow: 0 0 10px var(--neon-pink);
+}
+
