@@ -49,6 +49,11 @@ export class Renderer {
     this.scene.add(new THREE.AmbientLight(0x202840, 0.6));
   }
 
+  /** Current internal vertical resolution (for screen-space point sizing). */
+  get renderHeight(): number {
+    return this.pixelHeight;
+  }
+
   /** Change the internal render resolution (quality). */
   setPixelHeight(h: number) {
     this.pixelHeight = h;

@@ -35,6 +35,14 @@ export class LocalPlayer {
   /** Look-sensitivity multiplier (settings + scoped), updated by Game. */
   sensMul = 1;
 
+  // Admin "fun" toggles (client-side only — movement is client-authoritative).
+  /** Free-fly through geometry (no collision, no gravity). */
+  noclip = false;
+  /** Hover/fly with collision still on (gravity off, SPACE/SHIFT = up/down). */
+  fly = false;
+  /** Extra movement-speed multiplier from the admin speed slider. */
+  adminSpeedMul = 1;
+
   /** Dash ability cooldown (s remaining). */
   dashCooldown = 0;
 
@@ -66,6 +74,12 @@ export class LocalPlayer {
       this.yaw = Math.atan2(x, z);
       this.pitch = 0;
     }
+  }
+
+  /** Instantly move to a position (admin teleport / bring). */
+  teleport(x: number, y: number, z: number) {
+    this.pos.set(x, y + 0.1, z);
+    this.vel.set(0, 0, 0);
   }
 
   look(dx: number, dy: number) {
@@ -101,6 +115,30 @@ export class LocalPlayer {
     }
   }
 
+  /** Admin fly/noclip movement: camera-relative 6-DOF, optional collision. */
+  private flyMove(input: Input, dt: number, collide: boolean) {
+    const cp = Math.cos(this.pitch);
+    const fwd = new THREE.Vector3(-Math.sin(this.yaw) * cp, Math.sin(this.pitch), -Math.cos(this.yaw) * cp);
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    const wish = input.moveAxis(); // x: strafe (+1 = right), z: forward (-1 = W)
+    const dir = new THREE.Vector3();
+    dir.addScaledVector(fwd, -wish.z);
+    dir.addScaledVector(right, wish.x);
+    if (input.jumping) dir.y += 1;
+    if (input.crouching) dir.y -= 1;
+    if (dir.lengthSq() > 0) dir.normalize();
+    const speed = 16 * this.speedMul * this.adminSpeedMul;
+    this.vel.set(dir.x * speed, dir.y * speed, dir.z * speed);
+    if (collide) {
+      this.world.move(this.pos, this.vel, MOVE.radius, MOVE.height, dt);
+    } else {
+      this.pos.addScaledVector(this.vel, dt);
+    }
+    this.grounded = false;
+    this.sliding = false;
+    this.crouching = false;
+  }
+
   /** Dash burst in the current move/look direction. Returns true if it fired. */
   tryDash(): boolean {
     if (this.dead || this.dashCooldown > 0) return false;
@@ -116,6 +154,13 @@ export class LocalPlayer {
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
 
     if (this.dead) {
+      this.updateCamera(0, dt);
+      return { slideStarted: false, landed: false, jumped: false, padLaunched: false };
+    }
+
+    // Admin fly / noclip: free 6-DOF flight instead of the normal sim.
+    if (this.noclip || this.fly) {
+      this.flyMove(input, dt, !this.noclip);
       this.updateCamera(0, dt);
       return { slideStarted: false, landed: false, jumped: false, padLaunched: false };
     }
@@ -159,7 +204,7 @@ export class LocalPlayer {
         wishX: wx, wishZ: wz, wishSpeed,
         jump: input.jumping, jumpEdge,
         crouch: this.crouching, crouchEdge,
-        speedMul: this.speedMul, maxJumps: this.maxJumps, canSlide: this.canSlide,
+        speedMul: this.speedMul * this.adminSpeedMul, maxJumps: this.maxJumps, canSlide: this.canSlide,
       },
       this.world,
       dt,

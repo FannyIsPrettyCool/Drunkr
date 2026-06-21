@@ -927,3 +927,275 @@ body {
 #cfg-bots-row.hidden,
 #cfg-botcount-row.hidden { display: none; }
 
+/* --- Kill-feed assist tag --- */
+#killfeed .assist {
+  margin-left: 0.4rem;
+  font-size: 0.8em;
+  color: var(--neon-cyan);
+  opacity: 0.75;
+}
+
+/* --- Speedometer (bottom-right, above the ammo block) --- */
+#speedometer {
+  position: absolute;
+  right: 3rem;
+  bottom: 6.2rem;
+  text-align: right;
+  pointer-events: none;
+  z-index: 6;
+  color: var(--neon-cyan);
+  line-height: 1;
+  transition: color 0.15s linear;
+}
+#speed-val {
+  font-size: 1.9rem;
+  font-weight: bold;
+  text-shadow: 0 0 12px currentColor, 0 0 4px #000;
+}
+.speed-unit {
+  font-size: 0.8rem;
+  opacity: 0.65;
+  margin-left: 0.25rem;
+  letter-spacing: 0.08rem;
+}
+#speedometer.fast { color: var(--neon-amber, #ffb23d); }
+#speedometer.blaze { color: var(--neon-pink); }
+
+/* --- Speed lines overlay (above the game canvas, below the HUD) --- */
+#speedlines {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* --- Spawn-protection indicator --- */
+#protect {
+  position: absolute;
+  left: 50%;
+  top: 13%;
+  transform: translateX(-50%);
+  color: var(--neon-cyan);
+  font-size: 0.95rem;
+  letter-spacing: 0.12rem;
+  text-shadow: 0 0 12px #18e0ff99, 0 0 4px #000;
+  pointer-events: none;
+  animation: protectpulse 1.1s ease-in-out infinite;
+}
+@keyframes protectpulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+/* --- Personal kill / assist confirmation (bottom-center) --- */
+#killconfirm {
+  position: absolute;
+  left: 50%;
+  bottom: 27%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 20;
+  letter-spacing: 0.08rem;
+  white-space: nowrap;
+  text-align: center;
+}
+#killconfirm.hidden { display: none; }
+#killconfirm.kill {
+  font-size: 1.55rem;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 0 0 16px var(--neon-pink), 0 0 4px #000;
+}
+#killconfirm.assist {
+  font-size: 1.05rem;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 12px #18e0ff99, 0 0 3px #000;
+}
+#killconfirm.show { animation: killpop 0.24s ease-out; }
+@keyframes killpop {
+  0%   { transform: translateX(-50%) scale(0.55); opacity: 0; }
+  55%  { transform: translateX(-50%) scale(1.18); opacity: 1; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+
+/* --- Toast / announcement --- */
+#toast {
+  position: absolute;
+  top: 16%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5rem 1rem;
+  background: rgba(5, 6, 12, 0.82);
+  border: 1px solid var(--neon-cyan);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 0.95rem;
+  letter-spacing: 0.04rem;
+  pointer-events: none;
+  z-index: 30;
+  box-shadow: 0 0 18px #18e0ff44;
+}
+#toast.admin {
+  top: 22%;
+  font-size: 1.3rem;
+  font-weight: bold;
+  letter-spacing: 0.1rem;
+  color: #ffd23b;
+  border-color: #ffd23b;
+  text-transform: uppercase;
+  text-shadow: 0 0 18px #ffd23b88;
+  box-shadow: 0 0 26px #ffd23b44;
+}
+#toast.hidden { display: none; }
+
+/* --- Admin badge (HUD hint) --- */
+#admin-badge {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 0.72rem;
+  letter-spacing: 0.06rem;
+  color: #ffd23b;
+  text-shadow: 0 0 10px #ffd23b88;
+  pointer-events: none;
+  z-index: 25;
+}
+#admin-badge.hidden { display: none; }
+
+/* --- Admin panel --- */
+#admin-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 6, 12, 0.55);
+  z-index: 60;
+}
+#admin-panel.hidden { display: none; }
+.ap-card {
+  width: min(960px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: linear-gradient(180deg, #0b0e1aee, #070912ee);
+  border: 1px solid var(--neon-pink);
+  border-radius: 10px;
+  box-shadow: 0 0 40px #ff2d9b33;
+  padding: 1rem 1.2rem 0.8rem;
+  color: var(--fg);
+}
+.ap-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 1.3rem;
+  font-weight: bold;
+  letter-spacing: 0.12rem;
+  color: var(--neon-pink);
+  text-shadow: 0 0 14px #ff2d9b66;
+  margin-bottom: 0.7rem;
+}
+.ap-close {
+  background: transparent;
+  border: 1px solid #ffffff33;
+  color: var(--fg);
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ap-close:hover { border-color: var(--neon-pink); }
+.ap-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.1fr;
+  gap: 1rem;
+}
+.ap-col h4 {
+  font-size: 0.8rem;
+  letter-spacing: 0.1rem;
+  color: var(--neon-cyan);
+  margin: 0.6rem 0 0.4rem;
+  border-bottom: 1px solid #18e0ff33;
+  padding-bottom: 0.2rem;
+}
+.ap-col h4:first-child { margin-top: 0; }
+.ap-btns { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.ap-card button {
+  background: #141a2c;
+  border: 1px solid #2a3550;
+  color: var(--fg);
+  padding: 0.32rem 0.55rem;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.ap-card button:hover { border-color: var(--neon-cyan); background: #1b2540; }
+.ap-card button.danger { border-color: #ff3b5b66; color: #ff8c9c; }
+.ap-card button.danger:hover { border-color: #ff3b5b; background: #2a1622; }
+.ap-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  margin: 0.3rem 0;
+  cursor: pointer;
+}
+.ap-range, .ap-sel {
+  display: block;
+  font-size: 0.8rem;
+  margin: 0.45rem 0;
+  color: #b9cbe8;
+}
+.ap-range input[type="range"] { width: 100%; margin-top: 0.2rem; }
+.ap-sel select {
+  width: 100%;
+  margin-top: 0.2rem;
+  background: #141a2c;
+  color: var(--fg);
+  border: 1px solid #2a3550;
+  border-radius: 5px;
+  padding: 0.3rem;
+  font-family: inherit;
+}
+.ap-announce { display: flex; gap: 0.4rem; }
+.ap-announce input {
+  flex: 1;
+  background: #141a2c;
+  border: 1px solid #2a3550;
+  color: var(--fg);
+  border-radius: 5px;
+  padding: 0.35rem 0.5rem;
+  font-family: inherit;
+}
+.ap-players .ap-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ap-prow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  background: #0e1322;
+  border: 1px solid #1d2740;
+  border-radius: 5px;
+  padding: 0.3rem 0.45rem;
+}
+.ap-pname { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-pname em { color: #6f80a0; font-style: normal; font-size: 0.72rem; }
+.ap-pacts { display: flex; gap: 0.25rem; flex-shrink: 0; }
+.ap-pacts button { padding: 0.2rem 0.4rem; font-size: 0.72rem; }
+.ap-empty { color: #6f80a0; font-size: 0.8rem; }
+.ap-hint {
+  margin-top: 0.7rem;
+  font-size: 0.72rem;
+  color: #6f80a0;
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .ap-cols { grid-template-columns: 1fr; }
+}
+

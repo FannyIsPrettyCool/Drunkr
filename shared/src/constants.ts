@@ -172,6 +172,9 @@ export const GRENADE = {
 export const PLAYER = {
   maxHealth: 100,
   respawnDelayMs: 2000,
+  /** Spawn-protection (invincibility) window after respawning. Drops instantly
+   * the moment the protected player fires. */
+  spawnProtectMs: 2500,
 };
 
 /** Weapon definitions. */

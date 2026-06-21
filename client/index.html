@@ -8,6 +8,7 @@
   </head>
   <body>
     <canvas id="game"></canvas>
+    <canvas id="speedlines"></canvas>
 
     <!-- HUD -->
     <div id="hud" class="hidden">
@@ -17,6 +18,7 @@
       <div id="crosshair">
         <span></span><span></span><span></span><span></span>
       </div>
+      <div id="speedometer"><span id="speed-val">0</span><span class="speed-unit">u/s</span></div>
       <div id="hud-bottom">
         <div id="health"><span id="overheal-val" class="hidden"></span><span class="label">HP</span><span id="health-val">100</span></div>
         <div id="ammo-block">
@@ -52,6 +54,10 @@
         <div id="bomb-round-score"></div>
       </div>
       <div id="banner" class="hidden"></div>
+      <div id="protect" class="hidden">⛨ SPAWN PROTECTION</div>
+      <div id="killconfirm" class="hidden"></div>
+      <div id="toast" class="hidden"></div>
+      <div id="admin-badge" class="hidden">★ ADMIN · press ` for panel</div>
       <div id="intermission" class="hidden">
         <div class="io-title">ROUND OVER</div>
         <div class="winner"></div>
@@ -72,7 +78,7 @@
           <div class="inter-scores-col">
             <div class="inter-col-label">SCOREBOARD</div>
             <table>
-              <thead><tr><th>PLAYER</th><th class="r">K</th><th class="r">D</th></tr></thead>
+              <thead><tr><th>PLAYER</th><th class="r">K</th><th class="r">D</th><th class="r">A</th></tr></thead>
               <tbody id="inter-score-body"></tbody>
             </table>
           </div>
@@ -115,6 +121,9 @@
         <p class="hint pm-hint">Class &amp; skin apply on next game.</p>
       </div>
     </div>
+
+    <!-- Admin panel (shown only to players granted admin) -->
+    <div id="admin-panel" class="hidden"></div>
 
     <!-- Lobby -->
     <div id="menu">

@@ -25,6 +25,13 @@ export class HUD {
   private bannerTimer = 0;
   private timerEl = document.getElementById("timer")!;
   private fpsEl = document.getElementById("fps")!;
+  private toastEl = document.getElementById("toast")!;
+  private toastTimer = 0;
+  private killConfirmEl = document.getElementById("killconfirm")!;
+  private killConfirmTimer = 0;
+  private protectEl = document.getElementById("protect")!;
+  private speedometer = document.getElementById("speedometer")!;
+  private speedVal = document.getElementById("speed-val")!;
   private intermission = document.getElementById("intermission")!;
   private intermissionTimer = 0;
 
@@ -142,13 +149,16 @@ export class HUD {
     this.crosshair.style.opacity = active ? "0" : "1";
   }
 
-  addKill(killerName: string, victimName: string, head: boolean) {
+  addKill(killerName: string, victimName: string, head: boolean, assistNames: string[] = []) {
     const row = document.createElement("div");
     row.className = "row";
+    const assist = assistNames.length
+      ? `<span class="assist">+${assistNames.map(esc).join(", ")}</span>`
+      : "";
     row.innerHTML =
       `<span class="killer">${esc(killerName)}</span>` +
       `<span class="verb">${head ? '✜' : '»'}</span>` +
-      `<span class="victim">${esc(victimName)}</span>`;
+      `<span class="victim">${esc(victimName)}</span>` + assist;
     if (head) row.querySelector(".verb")!.classList.add("head");
     this.killfeed.prepend(row);
     while (this.killfeed.children.length > 5) {
@@ -165,13 +175,48 @@ export class HUD {
       .map(
         (p) =>
           `<tr class="${p.id === localId ? "me" : ""}">` +
-          `<td>${esc(p.name)}</td>` +
+          `<td>${p.admin ? "★ " : ""}${esc(p.name)}</td>` +
           `<td class="num">${p.kills}</td>` +
-          `<td class="num">${p.deaths}</td></tr>`,
+          `<td class="num">${p.deaths}</td>` +
+          `<td class="num">${p.assists ?? 0}</td></tr>`,
       )
       .join("");
     this.scoreboard.innerHTML =
-      `<h2>SCORES</h2><table><tr><th>RUNNER</th><th class="num">K</th><th class="num">D</th></tr>${rows}</table>`;
+      `<h2>SCORES</h2><table><tr><th>RUNNER</th><th class="num">K</th><th class="num">D</th><th class="num">A</th></tr>${rows}</table>`;
+  }
+
+  /** Live speedometer (units/s), colour-tiered by how fast you're moving. */
+  setSpeed(speed: number) {
+    this.speedVal.textContent = String(Math.round(speed));
+    this.speedometer.classList.toggle("fast", speed > 12);
+    this.speedometer.classList.toggle("blaze", speed > 20);
+  }
+
+  /** Spawn-protection indicator (active just after respawning). */
+  setProtected(on: boolean) {
+    this.protectEl.classList.toggle("hidden", !on);
+  }
+
+  /** Personal kill/assist confirmation, popped at bottom-center of the screen. */
+  killConfirm(text: string, kind: "kill" | "assist") {
+    this.killConfirmEl.textContent = text; // textContent → safe from name injection
+    this.killConfirmEl.className = kind;    // "kill" | "assist" (clears "hidden")
+    void this.killConfirmEl.offsetWidth;    // restart the pop animation
+    this.killConfirmEl.classList.add("show");
+    clearTimeout(this.killConfirmTimer);
+    this.killConfirmTimer = window.setTimeout(
+      () => this.killConfirmEl.classList.add("hidden"),
+      kind === "kill" ? 1700 : 1300,
+    );
+  }
+
+  /** A transient notification: announcements (kind="admin") or action feedback. */
+  toast(text: string, kind: "info" | "admin" = "info") {
+    this.toastEl.textContent = text;
+    this.toastEl.className = kind === "admin" ? "admin" : "";
+    this.toastEl.classList.remove("hidden");
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.toastEl.classList.add("hidden"), kind === "admin" ? 4500 : 2800);
   }
 }
 

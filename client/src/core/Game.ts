@@ -27,12 +27,15 @@ import {
   type ServerMessage,
 } from "@drunkr/shared";
 import { Renderer } from "../render/Renderer.js";
+import { Particles } from "../render/Particles.js";
+import { SpeedLines } from "../render/SpeedLines.js";
 import { Arena } from "../world/Arena.js";
 import { LocalPlayer } from "../entities/LocalPlayer.js";
 import { RemotePlayers } from "../entities/RemotePlayers.js";
 import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
 import { HUD } from "../ui/HUD.js";
+import { AdminPanel } from "../ui/AdminPanel.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
 import { settings, QUALITY_HEIGHT } from "./Settings.js";
@@ -40,12 +43,19 @@ import type { Network } from "../net/Network.js";
 
 export class Game {
   private renderer: Renderer;
+  private particles: Particles;
+  private speedLines = new SpeedLines();
+  /** True while the local player has spawn protection (cleared on first shot). */
+  private protectActive = false;
   private arena: Arena;
   private local: LocalPlayer;
   private remotes: RemotePlayers;
   private weapon: Weapon;
   private input: Input;
   private hud: HUD;
+  private adminPanel: AdminPanel;
+  private isAdmin = false;
+  private adminBadge = document.getElementById("admin-badge")!;
   private sfx = new Sfx();
   private music: Music | null = null;
   private musicStarted = false;
@@ -72,6 +82,8 @@ export class Game {
   private clockOffset = 0;
   private matchEndsAt: number;
   private fps = 60;
+  /** Decaying camera-shake amount (0..~1.4), driven by nearby explosions. */
+  private shake = 0;
   private fellSent = false;
   private localCls = DEFAULT_CLASS;
   /** Client-side ability cooldown end times (performance.now ms). */
@@ -131,6 +143,7 @@ export class Game {
     const map = welcome.mapData ?? MAPS[welcome.mapId] ?? MAPS.neon_yard;
 
     this.renderer = new Renderer(canvas);
+    this.particles = new Particles(this.renderer.scene, this.renderer.renderHeight);
     this.arena = new Arena(map);
     this.renderer.scene.add(this.arena.group);
 
@@ -148,6 +161,7 @@ export class Game {
       this.remotes,
       this.net,
       this.local,
+      this.particles,
       {
         onAmmo: (cur, max) => this.hud.setAmmo(cur, max),
         onHit: (head) => { this.hud.hitmark(head); this.sfx.hit(head); },
@@ -162,7 +176,11 @@ export class Game {
         },
         onWeapon: (name) => this.hud.setWeapon(name),
         onScope: (active) => this.hud.setScope(active),
-        onShoot: (id) => this.sfx.shoot(id),
+        onShoot: (id) => {
+          this.sfx.shoot(id);
+          // Firing drops spawn protection instantly (the server does the same).
+          if (this.protectActive) { this.protectActive = false; this.hud.setProtected(false); }
+        },
         onWallHit: (pos) => this.sfx.bulletImpact(pos.x, pos.y, pos.z),
       },
     );
@@ -181,11 +199,33 @@ export class Game {
         }
         this.sfx.startAmbience();
         this.hidePauseMenu();
-      } else if (!this.local.dead) {
+      } else if (!this.local.dead && !this.adminPanel.open) {
         this.showPauseMenu(false);
       }
     };
     this.initPauseMenu();
+
+    // Admin panel (only usable once the server grants admin).
+    this.adminPanel = new AdminPanel({
+      send: (m) => this.net.send(m),
+      roster: () => [...this.roster.values()],
+      localId: this.localId,
+      maps: Object.entries(MAPS).filter(([id]) => id !== "dust2").map(([id, m]) => ({ id, name: m.name })),
+      onClientToggle: (key, on) => {
+        if (key === "noclip") this.local.noclip = on;
+        else if (key === "fly") this.local.fly = on;
+        else if (key === "infammo") this.weapon.infiniteAmmo = on;
+      },
+      onSpeed: (mul) => { this.local.adminSpeedMul = mul; },
+      onClose: () => this.closeAdmin(),
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.code !== "Backquote" || !this.isAdmin || !this.running || this.inIntermission) return;
+      // Don't steal the backtick while typing into a panel field.
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      e.preventDefault();
+      if (this.adminPanel.open) this.closeAdmin(); else this.openAdmin();
+    });
 
     // Seed roster and spawn from the welcome payload.
     for (const p of welcome.players) {
@@ -276,12 +316,26 @@ export class Game {
     this.pauseMenu.classList.add("hidden");
   }
 
+  // ---- Admin panel ----------------------------------------------------------
+
+  private openAdmin() {
+    this.hidePauseMenu();
+    this.adminPanel.show();
+    document.exitPointerLock?.();
+  }
+
+  private closeAdmin() {
+    this.adminPanel.hide();
+    this.input.requestLock();
+  }
+
   // ---- Game lifecycle -------------------------------------------------------
 
   start() {
     this.hud.show();
     this.running = true;
     this.renderer.setPixelHeight(QUALITY_HEIGHT[settings.quality]);
+    this.particles.setScale(this.renderer.renderHeight);
     this.input.requestLock();
     requestAnimationFrame(() => this.loop());
   }
@@ -315,17 +369,29 @@ export class Game {
       case "kill": {
         const killer = this.roster.get(msg.killer)?.name ?? "?";
         const victim = this.roster.get(msg.victim)?.name ?? "?";
-        this.hud.addKill(killer, victim, msg.head);
+        const assistNames = (msg.assists ?? []).map((id) => this.roster.get(id)?.name ?? "?");
+        this.hud.addKill(killer, victim, msg.head, assistNames);
+        // Death dissolve in the victim's hue (skip the local player — no avatar).
+        if (msg.victim !== this.localId) {
+          const vp = this.remotes.position(msg.victim);
+          const vhue = this.roster.get(msg.victim)?.hue ?? 0.5;
+          if (vp) this.particles.death(vp, new THREE.Color().setHSL(vhue, 0.85, 0.55).getHex());
+        }
         if (msg.killer === this.localId && msg.victim !== this.localId) {
           this.sfx.kill();
+          this.hud.killConfirm(`killed ${victim}`, "kill");
           // Kill reward: refill the magazine of the weapon we're holding. The
           // +25 HP refund is applied server-side and arrives via the snapshot.
           this.weapon.refillCurrent();
+        } else if ((msg.assists ?? []).includes(this.localId) && msg.victim !== this.localId) {
+          this.hud.killConfirm(`assist (${victim})`, "assist");
         }
         if (msg.victim === this.localId) {
           this.local.dead = true;
           this.resetAbilityCooldowns();
           this.hud.setDead(true);
+          this.protectActive = false;
+          this.hud.setProtected(false);
           this.sfx.death();
           if (msg.from && msg.at) {
             this.showDeathTracer(
@@ -383,8 +449,41 @@ export class Game {
           this.hud.setHealth(msg.health);
           this.weapon.resetAmmo();
           this.clearDeathTracer();
+          this.protectActive = true;
+          this.hud.setProtected(true);
+          const hue = this.roster.get(this.localId)?.hue ?? 0.5;
+          this.particles.spawnBurst(msg.pos, new THREE.Color().setHSL(hue, 0.85, 0.55).getHex());
+        } else {
+          const r = this.roster.get(msg.id);
+          if (r) this.particles.spawnBurst(msg.pos, new THREE.Color().setHSL(r.hue, 0.85, 0.55).getHex());
         }
         break;
+      case "admin": {
+        this.isAdmin = msg.granted;
+        this.adminBadge.classList.toggle("hidden", !msg.granted);
+        if (!msg.granted) {
+          if (this.adminPanel.open) this.closeAdmin();
+          // Drop any client-side mods when admin is revoked.
+          this.local.noclip = false;
+          this.local.fly = false;
+          this.local.adminSpeedMul = 1;
+          this.weapon.infiniteAmmo = false;
+        }
+        this.hud.toast(msg.granted ? "ADMIN GRANTED — press ` for panel" : "Admin revoked", "admin");
+        break;
+      }
+      case "toast":
+        this.hud.toast(msg.text, msg.kind ?? "info");
+        break;
+      case "teleport": {
+        const hue = this.roster.get(this.localId)?.hue ?? 0.5;
+        const col = new THREE.Color().setHSL(hue, 0.85, 0.55).getHex();
+        this.particles.spawnBurst({ x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z }, col);
+        this.local.teleport(msg.pos.x, msg.pos.y, msg.pos.z);
+        this.particles.spawnBurst(msg.pos, col);
+        this.fellSent = false;
+        break;
+      }
       case "bombstart":
         this.onBombRoundStart(msg);
         break;
@@ -408,7 +507,7 @@ export class Game {
 
     const sorted = [...msg.scores].sort((a, b) => b.kills - a.kills);
     this.interScoreBody.innerHTML = sorted
-      .map((p) => `<tr class="${p.id === this.localId ? "me" : ""}"><td>${p.name}</td><td class="r">${p.kills}</td><td class="r">${p.deaths}</td></tr>`)
+      .map((p) => `<tr class="${p.id === this.localId ? "me" : ""}"><td>${p.admin ? "★ " : ""}${p.name}</td><td class="r">${p.kills}</td><td class="r">${p.deaths}</td><td class="r">${p.assists ?? 0}</td></tr>`)
       .join("");
 
     this.interVoteBtns.innerHTML = "";
@@ -474,6 +573,7 @@ export class Game {
       (mesh.material as THREE.Material).dispose();
     }
     this.projMeshes.clear();
+    this.particles.clear();
 
     this.roster.clear();
     this.remotes.clear();
@@ -486,6 +586,8 @@ export class Game {
         this.hud.setDead(false);
         this.hud.setHealth(p.health);
         this.weapon.resetAmmo();
+        this.protectActive = true;
+        this.hud.setProtected(true);
       } else {
         this.remotes.add(p);
       }
@@ -526,6 +628,8 @@ export class Game {
         this.hud.setDead(false);
         this.hud.setHealth(p.health);
         this.weapon.resetAmmo();
+        this.protectActive = true;
+        this.hud.setProtected(true);
       } else {
         this.remotes.add(p);
       }
@@ -713,7 +817,10 @@ export class Game {
     switch (id) {
       case "dash":
         used = this.local.tryDash();
-        if (used) this.sfx.dash();
+        if (used) {
+          this.sfx.dash();
+          this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 10);
+        }
         break;
       case "updraft":
         this.local.applyImpulse(0, UPDRAFT.vy, 0);
@@ -735,10 +842,15 @@ export class Game {
         if (id === "flash") this.sfx.flashAbility(); else this.sfx.fragThrow();
         break;
       }
-      case "blink":
+      case "blink": {
+        const from = { x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z };
         this.local.blink(BLINK.dist);
         this.sfx.blink();
+        const col = new THREE.Color().setHSL(this.roster.get(this.localId)?.hue ?? 0.5, 0.85, 0.55).getHex();
+        this.particles.spawnBurst(from, col);
+        this.particles.spawnBurst({ x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z }, col);
         break;
+      }
       case "fortify":
         this.net.send({ t: "ability", ability: "fortify" });
         this.sfx.fortify();
@@ -791,6 +903,7 @@ export class Game {
         this.projMeshes.set(p.id, mesh);
       }
       mesh.position.set(p.pos.x, p.pos.y, p.pos.z);
+      this.particles.trail(p.pos, p.kind === "frag" ? 0xff2d9b : 0xbfe6ff, 1);
     }
     for (const [id, mesh] of this.projMeshes) {
       if (!seen.has(id)) {
@@ -802,29 +915,25 @@ export class Game {
     }
   }
 
+  private addShake(amt: number) {
+    this.shake = Math.min(1.4, this.shake + amt);
+  }
+
   private onExplosion(kind: "flash" | "frag" | "siphon", pos: THREE.Vector3) {
     if (kind === "siphon") this.sfx.drainAt(pos.x, pos.y, pos.z);
     else this.sfx.boomAt(pos.x, pos.y, pos.z);
-    const color = kind === "frag" ? 0xff7a3d : kind === "siphon" ? 0xff1f4f : 0xffffff;
+
     const radius = kind === "frag" ? GRENADE.fragRadius : kind === "siphon" ? SIPHON.radius : 5;
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 14, 14), mat);
-    mesh.position.copy(pos);
-    this.renderer.scene.add(mesh);
-    const start = performance.now();
-    const fade = () => {
-      const t = (performance.now() - start) / 320;
-      if (t >= 1) {
-        this.renderer.scene.remove(mesh);
-        mesh.geometry.dispose();
-        mat.dispose();
-        return;
-      }
-      mat.opacity = 0.85 * (1 - t);
-      mesh.scale.setScalar(1 + t * 0.6);
-      requestAnimationFrame(fade);
-    };
-    fade();
+    this.particles.explosion(pos, kind, radius);
+
+    // Camera shake, scaled by proximity (frag/shockwave only — flash is visual).
+    if (kind !== "flash") {
+      const cam = new THREE.Vector3();
+      this.renderer.camera.getWorldPosition(cam);
+      const dist = cam.distanceTo(pos);
+      const amt = Math.max(0, 1 - dist / (radius + 14));
+      if (amt > 0) this.addShake(amt * (kind === "frag" ? 1.2 : 0.8));
+    }
 
     // Flash blinds you if you're close, looking at it, and have line of sight.
     if (kind === "flash" && !this.local.dead) {
@@ -875,6 +984,11 @@ export class Game {
     if (!p.dead && wasDead) { this.hud.setDead(false); this.clearDeathTracer(); }
     if (p.dead && !wasDead) { this.hud.setDead(true); this.resetAbilityCooldowns(); }
     this.hud.setHealth(p.health);
+    // Spawn protection ends when the server says so (timeout / we fired) or on death.
+    if (this.protectActive && (p.invuln === false || p.dead)) {
+      this.protectActive = false;
+      this.hud.setProtected(false);
+    }
   }
 
   /**
@@ -966,7 +1080,21 @@ export class Game {
     if (mv.jumped) this.sfx.jump();
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
-    if (mv.padLaunched) this.sfx.pad();
+    if (mv.padLaunched) { this.sfx.pad(); this.particles.pad(this.local.pos); }
+
+    // Camera shake (decays), applied on top of the camera the player set.
+    if (this.shake > 0) {
+      this.shake = Math.max(0, this.shake - dt * 2.5);
+      const s = this.shake * this.shake * 0.7;
+      this.renderer.camera.position.x += (Math.random() - 0.5) * s;
+      this.renderer.camera.position.y += (Math.random() - 0.5) * s;
+      this.renderer.camera.position.z += (Math.random() - 0.5) * s;
+    }
+    this.particles.update(dt);
+    // Speed lines + speedometer scale with horizontal momentum (0 when dead).
+    const hspeed = this.local.dead ? 0 : Math.hypot(this.local.vel.x, this.local.vel.z);
+    this.speedLines.update(dt, hspeed);
+    this.hud.setSpeed(hspeed);
 
     // Footsteps: play periodically while moving on the ground (not sliding).
     if (!this.local.dead && this.local.grounded && !this.local.sliding) {
@@ -975,6 +1103,7 @@ export class Game {
         this.footstepTimer -= dt;
         if (this.footstepTimer <= 0) {
           this.sfx.footstep();
+          this.particles.footstep(this.local.pos);
           this.footstepTimer = 0.38 * (MOVE.speed / Math.max(spd, 3));
         }
       } else {
