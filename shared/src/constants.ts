@@ -47,8 +47,8 @@ export const MOVE = {
   /** Knife-in-air thrust: while airborne with the katana out you accelerate
    * along your current heading (rewards aggressive knife movement), up to a
    * higher air speed than other weapons allow. */
-  knifeAirAccel: 14,
-  knifeAirMax: 28,
+  knifeAirAccel: 7,
+  knifeAirMax: 16,
   /** Normal step-up height (walk up small ledges without jumping). */
   stepHeight: 0.55,
   /** Crouch-jump step-up: while crouched in the air you tuck your legs and can
@@ -186,7 +186,7 @@ export const FORTIFY = { overheal: 50 };
  * forward + up; the AoE damage burst happens where you LAND (the slam), not on
  * takeoff — so it doubles as a gap-closer and a ground-pound.
  */
-export const SHOCKWAVE = { radius: 8, damage: 70, launchForward: 17, launchUp: 12.5 };
+export const SHOCKWAVE = { radius: 8, damage: 150, launchForward: 17, launchUp: 12.5 };
 /**
  * Vampire Bloodlust: a timed buff where the damage you deal heals you (lifesteal),
  * can briefly overheal, and you move a bit faster while it's active.

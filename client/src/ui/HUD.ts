@@ -34,6 +34,7 @@ export class HUD {
   private speedVal = document.getElementById("speed-val")!;
   private intermission = document.getElementById("intermission")!;
   private intermissionTimer = 0;
+  private chatLog = document.getElementById("chat-log")!;
 
   show() {
     this.root.classList.remove("hidden");
@@ -208,6 +209,17 @@ export class HUD {
       () => this.killConfirmEl.classList.add("hidden"),
       kind === "kill" ? 1700 : 1300,
     );
+  }
+
+  /** Append a chat line to the log; auto-removed after 8 s via CSS animation. */
+  addChatMessage(name: string, text: string) {
+    const line = document.createElement("div");
+    line.className = "chat-line";
+    line.innerHTML = `<span class="chat-name">${esc(name)}</span>: ${esc(text)}`;
+    this.chatLog.appendChild(line);
+    // Keep at most 12 visible lines.
+    while (this.chatLog.children.length > 12) this.chatLog.firstChild!.remove();
+    setTimeout(() => line.remove(), 8000);
   }
 
   /** A transient notification: announcements (kind="admin") or action feedback. */

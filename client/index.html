@@ -64,6 +64,13 @@
         <div class="io-sub">next round starting…</div>
       </div>
       <div id="scoreboard" class="hidden"></div>
+      <div id="chat-log"></div>
+    </div>
+
+    <!-- Chat input bar (pointer-events:auto, shown only while typing) -->
+    <div id="chat-bar" class="hidden">
+      <span class="chat-prompt">SAY ›</span>
+      <input id="chat-input" maxlength="120" autocomplete="off" spellcheck="false" />
     </div>
 
     <!-- Intermission / map-vote overlay (pointer-events enabled) -->
