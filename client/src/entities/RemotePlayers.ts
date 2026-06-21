@@ -43,9 +43,14 @@ class Remote {
   name: string;
   kills = 0;
   deaths = 0;
+  private label!: THREE.Sprite;
+  private isAdmin = false;
+  private shield!: THREE.Mesh;
+  private invuln = false;
 
   constructor(state: PlayerState) {
     this.name = state.name;
+    this.isAdmin = !!state.admin;
     this.color = new THREE.Color().setHSL(state.hue, 0.85, 0.55);
     const emissive = this.color.clone().multiplyScalar(0.5);
     this.bodyMat = new THREE.MeshStandardMaterial({
@@ -100,8 +105,29 @@ class Remote {
 
     this.setWeapon(state.weapon ?? "ak");
 
-    const label = this.makeLabel(state.name, this.color);
-    this.group.add(label);
+    this.label = this.makeLabel(state.name, this.color);
+    this.group.add(this.label);
+
+    // Spawn-protection shield (toggled on by `invuln`, pulsed in animate()).
+    this.shield = new THREE.Mesh(
+      new THREE.SphereGeometry(0.85, 12, 10),
+      new THREE.MeshBasicMaterial({ color: 0x18e0ff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    this.shield.position.y = MOVE.height * 0.5;
+    this.shield.visible = false;
+    this.shield.raycast = () => {};
+    this.group.add(this.shield);
+  }
+
+  /** Rebuild the nametag with/without an admin crown when the flag changes. */
+  private setAdmin(on: boolean) {
+    if (on === this.isAdmin) return;
+    this.isAdmin = on;
+    this.group.remove(this.label);
+    (this.label.material as THREE.SpriteMaterial).map?.dispose();
+    (this.label.material as THREE.Material).dispose();
+    this.label = this.makeLabel(this.name, this.color);
+    this.group.add(this.label);
   }
 
   private makeLimb(w: number, h: number, d: number, x: number, y: number): THREE.Group {
@@ -124,7 +150,7 @@ class Remote {
     ctx.fillStyle = "#" + color.getHexString();
     ctx.shadowColor = "#000";
     ctx.shadowBlur = 8;
-    ctx.fillText(name, 128, 36);
+    ctx.fillText((this.isAdmin ? "★ " : "") + name, 128, 36);
     const tex = new THREE.CanvasTexture(c);
     tex.magFilter = THREE.NearestFilter;
     const sprite = new THREE.Sprite(
@@ -258,6 +284,8 @@ class Remote {
     this.posture = state.posture ?? 0;
     this.setWeapon(state.weapon ?? "ak");
     this.setInvis(!!state.invis);
+    this.setAdmin(!!state.admin);
+    this.invuln = !!state.invuln;
     this.buffer.push({
       time,
       x: state.pos.x, y: state.pos.y, z: state.pos.z,
@@ -354,6 +382,12 @@ class Remote {
     // Posture: dip the upper body for a crouch, dip + lean forward for a slide.
     this.upper.position.y = MOVE.height * 0.45 - 0.34 * this.crouchAmt - 0.42 * this.slideAmt;
     this.upper.rotation.x = 0.55 * this.slideAmt;
+
+    // Spawn-protection shield: a soft pulsing cyan bubble.
+    this.shield.visible = this.invuln;
+    if (this.invuln) {
+      (this.shield.material as THREE.MeshBasicMaterial).opacity = 0.16 + Math.sin(performance.now() * 0.008) * 0.08;
+    }
   }
 
   dispose(scene: THREE.Scene) {

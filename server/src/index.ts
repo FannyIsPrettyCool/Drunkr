@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import http from "node:http";
+import readline from "node:readline";
 import { readFile, stat } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import {
   encode,
   type ClientMessage,
   type ServerMessage,
+  type C_Admin,
   type PlayerState,
   type Vec3,
   type GameMap,
@@ -44,6 +46,11 @@ import {
 } from "@drunkr/shared";
 
 const PORT = Number(process.env.PORT ?? 2567);
+/** Callsigns auto-granted admin on join (e.g. ADMIN_NAMES="fanny,zero"). Lets a
+ * headless / tunneled host designate admins without an interactive console. */
+const ADMIN_NAMES = new Set(
+  (process.env.ADMIN_NAMES ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+);
 const DEFAULT_MAP = process.env.MAP && MAPS[process.env.MAP] ? process.env.MAP : "neon_yard";
 const DEFAULT_BOTS = Number(process.env.BOTS ?? 4);
 const MAX_PLAYERS = 12;
@@ -54,13 +61,24 @@ const WEAPON_SWITCH_MS = 250;
 
 const weaponOf = (a: Actor) => WEAPONS[a.state.weapon] ?? WEAPONS[DEFAULT_WEAPON];
 
-/** Bot difficulty presets — these make bots fair / beatable. */
+/**
+ * Bot difficulty presets — tuned to be fair / beatable.
+ *  - `aimLerp`  how fast the bot swings its aim onto a target (snappiness).
+ *  - `spread`   base random aim error (radians) added to every shot.
+ *  - `aimErr`   extra baseline error so close range isn't a guaranteed kill.
+ *  - `react`    reaction window (ms) before a *freshly spotted* target is shot.
+ *  - `burst`    extra pause (ms) inserted between bursts of an auto weapon.
+ *  - `range`    max distance (m) at which a bot will notice a target.
+ *  - `fovCos`   cosine of the view-cone half-angle: a bot only "sees" targets
+ *               in front of it (eyesight), not behind. Lower = wider awareness.
+ */
 const BOT_DIFF: Record<BotDifficulty, {
-  aimLerp: number; spread: number; react: [number, number]; fire: [number, number]; range: number;
+  aimLerp: number; spread: number; aimErr: number;
+  react: [number, number]; burst: [number, number]; range: number; fovCos: number;
 }> = {
-  easy:   { aimLerp: 0.06, spread: 0.14, react: [450, 850], fire: [320, 560], range: 40 },
-  normal: { aimLerp: 0.11, spread: 0.10, react: [300, 560], fire: [220, 380], range: 60 },
-  hard:   { aimLerp: 0.18, spread: 0.06, react: [170, 320], fire: [130, 230], range: 200 },
+  easy:   { aimLerp: 0.05, spread: 0.15, aimErr: 0.09, react: [550, 950], burst: [550, 1100], range: 38, fovCos: 0.40 },
+  normal: { aimLerp: 0.09, spread: 0.10, aimErr: 0.06, react: [380, 680], burst: [400, 850],  range: 55, fovCos: 0.32 },
+  hard:   { aimLerp: 0.15, spread: 0.06, aimErr: 0.035, react: [240, 440], burst: [260, 560],  range: 90, fovCos: 0.22 },
 };
 
 const BOT_NAMES = ["GHOST", "VIPER", "NEON", "RAZR", "BYTE", "HEX", "FLUX", "ZERO", "DRX", "KILO"];
@@ -76,6 +94,10 @@ interface BotAI {
   retargetAt: number;
   nextShotAt: number;
   reactAt: number;
+  /** Whether the current target was visible last tick (for re-peek reaction). */
+  targetWasVisible: boolean;
+  /** Rounds left in the current auto-fire burst before a discipline pause. */
+  burstLeft: number;
   // Movement sub-state for the shared stepMovement model.
   sliding: boolean;
   slideTime: number;
@@ -142,7 +164,25 @@ interface Actor {
   posHistory: PosSample[];
   /** Vampire Bloodlust: timestamp (ms) until which dealt damage lifesteals. */
   bloodlustUntil?: number;
+  /** Granted admin privileges (console `admin <id>`). */
+  admin?: boolean;
+  /** Admin godmode: incoming damage is ignored while true. */
+  god?: boolean;
+  /** Spawn protection: invincible until this time (ms), or until they fire. */
+  invulnUntil?: number;
+  /** Recent damage dealt to this actor (for awarding assists on death). */
+  damageLog: DamageHit[];
 }
+
+/** A single chunk of damage dealt to an actor, for assist attribution. */
+interface DamageHit {
+  by: number;
+  amount: number;
+  t: number;
+}
+
+/** How recently (ms) a damager must have hit the victim to earn an assist. */
+const ASSIST_WINDOW_MS = 10_000;
 
 interface PosSample {
   t: number;
@@ -414,7 +454,7 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
     pos: { x: s.x, y: s.y, z: s.z },
     yaw: 0, pitch: 0,
     health: PLAYER.maxHealth, hue,
-    kills: 0, deaths: 0, dead: false,
+    kills: 0, deaths: 0, assists: 0, dead: false,
     weapon, cls, invis: false, posture: 0,
   };
 }
@@ -499,6 +539,9 @@ function handleShoot(
   // client can't fire rays from across the map.
   const e = eye(shooter.state);
   if (Math.hypot(origin.x - e.x, origin.y - e.y, origin.z - e.z) > 3) return;
+
+  // Firing drops your own spawn protection instantly.
+  if (shooter.invulnUntil) { shooter.invulnUntil = 0; shooter.state.invuln = false; }
 
   const norm: Vec3[] = [];
   for (const d of dirs) {
@@ -679,8 +722,19 @@ function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean, 
 
 function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
   if (victim.state.dead) return;
+  // Admin godmode: the target shrugs off all damage.
+  if (victim.god) return;
+  // Spawn protection: invincible just after respawning (until they fire).
+  if (victim.invulnUntil && Date.now() < victim.invulnUntil && attacker.id !== victim.id) return;
   const before = victim.state.health;
   victim.state.health -= dmg;
+  // Log the hit (excluding self-damage) so the killer's helpers can earn assists.
+  if (attacker.id !== victim.id && dmg > 0) {
+    const now = Date.now();
+    victim.damageLog.push({ by: attacker.id, amount: dmg, t: now });
+    const cutoff = now - ASSIST_WINDOW_MS;
+    while (victim.damageLog.length && victim.damageLog[0].t < cutoff) victim.damageLog.shift();
+  }
   send(victim.ws, { t: "damage", health: Math.max(0, victim.state.health), from: attacker.id });
 
   // Vampire Bloodlust: heal the attacker for a fraction of the damage actually
@@ -702,6 +756,18 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
     victim.state.health = 0;
     victim.state.deaths++;
     attacker.state.kills++;
+    // Assists: everyone (besides the killer) who damaged the victim within the
+    // window gets credited. The killer is excluded even if they chipped earlier.
+    const now = Date.now();
+    const assisters: number[] = [];
+    for (const hit of victim.damageLog) {
+      if (now - hit.t > ASSIST_WINDOW_MS) continue;
+      if (hit.by === attacker.id || hit.by === victim.id) continue;
+      if (assisters.includes(hit.by)) continue;
+      const a = room.actors.get(hit.by);
+      if (a) { a.state.assists++; assisters.push(hit.by); }
+    }
+    victim.damageLog = [];
     // Kill reward: refund 25 HP (capped at max, preserving any overheal). The
     // killer's client refills its held weapon's magazine off the "kill" broadcast.
     if (attacker.id !== victim.id && attacker.state.health < PLAYER.maxHealth) {
@@ -709,6 +775,7 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
     }
     broadcast(room, {
       t: "kill", killer: attacker.id, victim: victim.id, head,
+      ...(assisters.length ? { assists: assisters } : {}),
       ...(shot ? { from: shot.from, at: shot.at } : {}),
     });
     if (room.mode !== "bomb") {
@@ -783,6 +850,7 @@ function startBombRound(room: Room) {
     a.state.dead = false;
     a.vel = { x: 0, y: 0, z: 0 };
     a.grounded = false;
+    grantSpawnProtection(a);
     players.push(a.state);
   }
 
@@ -990,12 +1058,15 @@ function startNextMatch(room: Room) {
   for (const a of room.actors.values()) {
     a.state.kills = 0;
     a.state.deaths = 0;
+    a.state.assists = 0;
+    a.damageLog = [];
     const s = pickSpawn(room);
     a.state.pos = { x: s.x, y: s.y, z: s.z };
     a.state.health = PLAYER.maxHealth;
     a.state.dead = false;
     a.vel = { x: 0, y: 0, z: 0 };
     a.grounded = false;
+    grantSpawnProtection(a);
     if (a.ai) { a.ai.ammo = weaponOf(a).magazine; a.ai.reloadUntil = 0; }
   }
 
@@ -1024,6 +1095,12 @@ function startNextMatch(room: Room) {
   }
 }
 
+/** Grant spawn protection (invincibility) to a freshly (re)spawned actor. */
+function grantSpawnProtection(a: Actor) {
+  a.invulnUntil = Date.now() + PLAYER.spawnProtectMs;
+  a.state.invuln = true;
+}
+
 function respawn(room: Room, a: Actor) {
   if (!room.actors.has(a.id)) return;
   const s = pickSpawn(room);
@@ -1032,6 +1109,8 @@ function respawn(room: Room, a: Actor) {
   a.state.dead = false;
   a.vel = { x: 0, y: 0, z: 0 };
   a.grounded = false;
+  a.damageLog = [];
+  grantSpawnProtection(a);
   if (a.ai) {
     a.ai.ammo = weaponOf(a).magazine;
     a.ai.reloadUntil = 0;
@@ -1054,10 +1133,11 @@ function spawnBot(room: Room) {
   room.actors.set(id, {
     id, ws: null, state,
     vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-    nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [],
+    nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [], damageLog: [],
     ai: {
       goal: null, pathGoal: null, path: [], pathIdx: 0, repathAt: 0,
       targetId: -1, retargetAt: 0, nextShotAt: 0, reactAt: 0,
+      targetWasVisible: false, burstLeft: 0,
       sliding: false, slideTime: 0, jumpsUsed: 0,
       ammo: (WEAPONS[state.weapon] ?? WEAPONS[DEFAULT_WEAPON]).magazine, reloadUntil: 0,
       strafeDir: Math.random() < 0.5 ? 1 : -1, strafeUntil: 0,
@@ -1069,6 +1149,7 @@ function spawnBot(room: Room) {
       behavior: persona.behavior, bhop: persona.bhop, campSpot: null, campUntil: 0,
     },
   });
+  grantSpawnProtection(room.actors.get(id)!);
 }
 
 const eye = (p: PlayerState): Vec3 => ({ x: p.pos.x, y: p.pos.y + MOVE.eyeHeight, z: p.pos.z });
@@ -1101,8 +1182,15 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
         const theirTeam = room.bombTeams.get(id);
         if (myTeam && theirTeam && myTeam === theirTeam) continue;
       }
-      const dist = Math.hypot(a.state.pos.x - me.pos.x, a.state.pos.z - me.pos.z);
+      const dx = a.state.pos.x - me.pos.x, dz = a.state.pos.z - me.pos.z;
+      const dist = Math.hypot(dx, dz);
       if (dist > diff.range) continue;
+      // Eyesight: a bot only notices targets within its forward view cone — no
+      // eyes in the back of the head. Point-blank threats (≤5m) are always felt.
+      if (dist > 5) {
+        const facing = -((dx / (dist || 1)) * Math.sin(me.yaw) + (dz / (dist || 1)) * Math.cos(me.yaw));
+        if (facing < diff.fovCos) continue;
+      }
       if (room.world.segmentBlocked(eye(me), chest(a.state))) continue;
       if (dist < bestDist) { bestDist = dist; bestId = id; }
     }
@@ -1115,6 +1203,14 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   const target = ai.targetId >= 0 ? room.actors.get(ai.targetId) : undefined;
   const targetVisible =
     !!target && !target.state.dead && !room.world.segmentBlocked(eye(me), chest(target.state));
+
+  // Re-peek reaction: when a target steps back into view (after cover broke the
+  // sightline) the bot has to re-acquire before it can fire again — it can't
+  // pre-fire the instant a head pokes out.
+  if (targetVisible && !ai.targetWasVisible) {
+    ai.reactAt = Math.max(ai.reactAt, now + rng(diff.react[0] * 0.5, diff.react[1] * 0.5));
+  }
+  ai.targetWasVisible = targetVisible;
 
   // === AIM TOWARD TARGET ===
   // Yaw convention: yaw=0 means model looks in -Z (same as local player camera at yaw=0).
@@ -1337,7 +1433,11 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
     // Negate because yaw now uses atan2(-dx,-dz), so forward = (-sin(yaw), -cos(yaw)).
     const aimDot = -(dx * Math.sin(me.yaw) + dz * Math.cos(me.yaw));
     const sniper = w.id === "sniper";
-    const spread = diff.spread + (sniper ? 0.04 : w.id === "shotgun" ? 0.07 : 0);
+    // Bots flail a bit up close (a target filling the screen would otherwise be
+    // a guaranteed hit), so spread grows as the target gets closer.
+    const closePenalty = targetDist < 14 ? (1 - targetDist / 14) * 0.06 : 0;
+    const spread =
+      diff.spread + diff.aimErr + closePenalty + (sniper ? 0.02 : w.id === "shotgun" ? 0.06 : 0);
     if (aimDot > (sniper ? 0.985 : 0.96)) {
       const pellets = w.pellets ?? 1;
       const shotDirs: Vec3[] = [];
@@ -1350,14 +1450,234 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
       }
       handleShoot(room, bot, o, shotDirs, !!w.melee);
       ai.ammo--;
+      // Cadence is the weapon's *real* fire rate (so the AK rattles, the sniper
+      // and shotgun are slow), not an arbitrary window. Auto weapons fire short
+      // bursts with a discipline pause so they aren't perfect lasers.
+      const cadence = 60_000 / w.fireRate;
       if (w.magazine > 0 && ai.ammo <= 0) {
         ai.reloadUntil = now + w.reloadMs;
         ai.ammo = w.magazine;
+        // Respect the weapon's cycle time too (a 1-round mag like the sniper must
+        // not fire faster than its fire rate just because its reload is shorter).
+        ai.nextShotAt = now + Math.max(w.reloadMs, cadence);
+        ai.burstLeft = 0;
+      } else if (w.auto) {
+        if (ai.burstLeft <= 0) {
+          ai.burstLeft = Math.floor(rng(3, 8));
+          ai.nextShotAt = now + cadence + rng(diff.burst[0], diff.burst[1]);
+        } else {
+          ai.burstLeft--;
+          ai.nextShotAt = now + cadence * rng(1.0, 1.3);
+        }
       } else {
-        ai.nextShotAt = now + Math.max(rng(diff.fire[0], diff.fire[1]), 60_000 / w.fireRate);
+        ai.nextShotAt = now + cadence * rng(1.0, 1.25);
       }
     }
   }
+}
+
+// --- admin -----------------------------------------------------------------
+
+/** Find an actor by its global id across every room. */
+function findActorById(id: number): { room: Room; actor: Actor } | null {
+  for (const room of rooms.values()) {
+    const actor = room.actors.get(id);
+    if (actor) return { room, actor };
+  }
+  return null;
+}
+
+/** Grant or revoke admin and notify that client (unlocks/locks the panel). */
+function setAdmin(actor: Actor, on: boolean) {
+  actor.admin = on;
+  actor.state.admin = on;
+  if (!on) actor.god = false;
+  send(actor.ws, { t: "admin", granted: on });
+  send(actor.ws, { t: "toast", text: on ? "ADMIN GRANTED" : "Admin revoked", kind: "admin" });
+}
+
+const adminToast = (actor: Actor, text: string) => send(actor.ws, { t: "toast", text, kind: "info" });
+
+/** Remove a bot from its room (and tell clients to drop its avatar). */
+function removeBot(room: Room, bot: Actor) {
+  room.actors.delete(bot.id);
+  broadcast(room, { t: "pleave", id: bot.id });
+}
+
+/** Process an admin-panel command. Authority is checked by the caller. */
+function handleAdmin(room: Room, actor: Actor, msg: C_Admin) {
+  const now = Date.now();
+  const targetActor = () => (msg.target !== undefined ? room.actors.get(msg.target) : undefined);
+  switch (msg.cmd) {
+    case "god":
+      actor.god = !actor.god;
+      adminToast(actor, `Godmode ${actor.god ? "ON" : "OFF"}`);
+      break;
+    case "heal":
+      actor.state.health = PLAYER.maxHealth + clamp(Math.round(msg.amount ?? 0), 0, 400);
+      adminToast(actor, "Healed");
+      break;
+    case "give": {
+      if (msg.value && WEAPONS[msg.value]) {
+        actor.state.weapon = msg.value;
+        send(actor.ws, { t: "forceweapon", weapon: msg.value });
+      }
+      break;
+    }
+    case "slay": {
+      const t = targetActor();
+      if (t && !t.state.dead) { dealDamage(room, actor, t, 99999, false); adminToast(actor, `Slayed ${t.state.name}`); }
+      break;
+    }
+    case "slayall":
+      for (const t of room.actors.values()) {
+        if (t.id === actor.id || t.state.dead) continue;
+        dealDamage(room, actor, t, 99999, false);
+      }
+      adminToast(actor, "Slayed the lobby");
+      break;
+    case "killbots":
+      for (const t of [...room.actors.values()]) if (t.ai && !t.state.dead) dealDamage(room, actor, t, 99999, false);
+      adminToast(actor, "Bots eliminated");
+      break;
+    case "kick": {
+      const t = targetActor();
+      if (!t || t.id === actor.id) break;
+      if (t.ws) { broadcast(room, { t: "toast", text: `${t.state.name} was kicked`, kind: "info" }); t.ws.close(); }
+      else if (t.ai) removeBot(room, t);
+      adminToast(actor, `Kicked ${t.state.name}`);
+      break;
+    }
+    case "tp": {
+      const t = targetActor();
+      if (t) { send(actor.ws, { t: "teleport", pos: { ...t.state.pos } }); adminToast(actor, `Teleported to ${t.state.name}`); }
+      break;
+    }
+    case "bring": {
+      const t = targetActor();
+      if (!t || t.id === actor.id) break;
+      if (t.ws) send(t.ws, { t: "teleport", pos: { ...actor.state.pos } });
+      else t.state.pos = { ...actor.state.pos };
+      adminToast(actor, `Brought ${t.state.name}`);
+      break;
+    }
+    case "boom": {
+      const t = targetActor();
+      if (t) explodeGrenade(room, { id: -1, owner: actor.id, kind: "frag", pos: { ...t.state.pos }, vel: { x: 0, y: 0, z: 0 }, explodeAt: now });
+      break;
+    }
+    case "bots": {
+      const want = clamp(Math.round(msg.amount ?? 0), 0, 10);
+      let cur = botCountOf(room);
+      while (cur < want) { spawnBot(room); cur++; }
+      for (const a of [...room.actors.values()]) {
+        if (cur <= want) break;
+        if (a.ai) { removeBot(room, a); cur--; }
+      }
+      room.botsEnabled = want > 0;
+      room.botCount = want;
+      adminToast(actor, `Bots set to ${want}`);
+      break;
+    }
+    case "difficulty":
+      if (msg.value === "easy" || msg.value === "normal" || msg.value === "hard") {
+        room.difficulty = msg.value;
+        adminToast(actor, `Difficulty: ${msg.value}`);
+      }
+      break;
+    case "map":
+      if (msg.value && MAPS[msg.value] && room.mode !== "bomb") {
+        room.voteMaps = [msg.value];
+        room.mapVotes = new Map();
+        room.intermission = false;
+        startNextMatch(room);
+        broadcast(room, { t: "toast", text: `Map changed to ${MAPS[msg.value].name}`, kind: "admin" });
+      }
+      break;
+    case "announce": {
+      const text = (msg.value ?? "").replace(/[<>&]/g, "").slice(0, 120);
+      if (text) broadcast(room, { t: "toast", text, kind: "admin" });
+      break;
+    }
+  }
+}
+
+/** A list of every connected actor across all rooms, for the server console. */
+function listPlayersText(): string {
+  const lines: string[] = [];
+  for (const room of rooms.values()) {
+    lines.push(`[${room.id}] ${room.name}  ·  ${room.mapId}  ·  ${room.mode}`);
+    for (const a of room.actors.values()) {
+      const kind = a.ai ? "bot" : "player";
+      lines.push(`    #${a.id}\t${a.state.name}\t(${kind})${a.admin ? "  ★ADMIN" : ""}`);
+    }
+  }
+  return lines.length ? lines.join("\n") : "(no rooms)";
+}
+
+/** Read admin commands from server stdin: players / admin <id> / kick <id> / say. */
+function startConsole() {
+  // Opt-in only. Binding readline to stdin wedges the server when stdin isn't a
+  // clean interactive terminal — e.g. under `tsx watch` (which hijacks stdin for
+  // its own watch control) or a detached / tunneled process (dead stdin handle).
+  // So the console stays OFF unless explicitly enabled AND attached to a TTY.
+  // To use it: build, then `DRUNKR_CONSOLE=1 node server/dist/index.js` in a terminal.
+  if (process.env.DRUNKR_CONSOLE !== "1") {
+    console.log("[console] admin console off (set DRUNKR_CONSOLE=1 + run in a terminal to enable; or use ADMIN_NAMES)");
+    return;
+  }
+  if (!process.stdin.isTTY) {
+    console.log("[console] DRUNKR_CONSOLE set but stdin is not a TTY — skipping (run a built server directly in a terminal)");
+    return;
+  }
+  const rl = readline.createInterface({ input: process.stdin });
+  console.log("[console] ready — type 'help' for admin commands");
+  rl.on("line", (raw) => {
+    const parts = raw.trim().split(/\s+/);
+    const cmd = parts[0]?.toLowerCase() ?? "";
+    const rest = raw.trim().slice(cmd.length).trim();
+    switch (cmd) {
+      case "":
+        break;
+      case "help":
+        console.log("  players                list every connected player/bot with their id");
+        console.log("  admin <id>             grant admin (opens their in-game admin panel)");
+        console.log("  unadmin <id>           revoke admin");
+        console.log("  kick <id>              disconnect a player (or remove a bot)");
+        console.log("  say <text>             broadcast an announcement to everyone");
+        break;
+      case "players":
+      case "list":
+      case "ls":
+        console.log(listPlayersText());
+        break;
+      case "admin":
+      case "unadmin": {
+        const id = Number(parts[1]);
+        const found = Number.isFinite(id) ? findActorById(id) : null;
+        if (!found) { console.log(`  no player with id #${parts[1]}`); break; }
+        if (found.actor.ai) { console.log("  bots can't be admins"); break; }
+        setAdmin(found.actor, cmd === "admin");
+        console.log(`  ${found.actor.state.name} (#${id}) admin = ${cmd === "admin"}`);
+        break;
+      }
+      case "kick": {
+        const id = Number(parts[1]);
+        const found = Number.isFinite(id) ? findActorById(id) : null;
+        if (!found) { console.log(`  no player with id #${parts[1]}`); break; }
+        if (found.actor.ws) found.actor.ws.close();
+        else removeBot(found.room, found.actor);
+        console.log(`  kicked #${id}`);
+        break;
+      }
+      case "say": {
+        if (rest) for (const room of rooms.values()) broadcast(room, { t: "toast", text: rest.slice(0, 120), kind: "admin" });
+        break;
+      }
+      default:
+        console.log(`  unknown command '${cmd}' — type 'help'`);
+    }
+  });
 }
 
 // --- connections -----------------------------------------------------------
@@ -1446,10 +1766,11 @@ wss.on("connection", (ws) => {
     const now = Date.now();
     actor = {
       id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
-      nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [],
+      nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [], damageLog: [],
     };
     room = target;
     target.actors.set(id, actor);
+    grantSpawnProtection(actor);
     send(ws, {
       t: "welcome", id, mapId: target.mapId, roomId: target.id, roomName: target.name,
       tickRate: TICK_RATE, snapshotRate: SNAPSHOT_RATE, matchEndsAt: target.matchEndsAt,
@@ -1493,6 +1814,9 @@ wss.on("connection", (ws) => {
     }
     broadcast(target, { t: "pjoin", player: state }, id);
     console.log(`+ ${state.name} (#${id}) -> ${target.name} (${realCount(target)} players)`);
+    // Headless hosts can pre-designate admins by callsign (ADMIN_NAMES env),
+    // since a tunneled / detached server has no interactive console.
+    if (actor && ADMIN_NAMES.has(state.name.trim().toLowerCase())) setAdmin(actor, true);
   }
 
   ws.on("message", (raw) => {
@@ -1646,6 +1970,10 @@ wss.on("connection", (ws) => {
           broadcast(room, { t: "voteupdate", votes });
         }
         break;
+      case "admin":
+        // Server-authoritative: silently ignore unless this actor is an admin.
+        if (actor.admin) handleAdmin(room, actor, msg);
+        break;
     }
   });
 
@@ -1693,6 +2021,8 @@ setInterval(() => {
       h.push({ t: time, x: a.state.pos.x, y: a.state.pos.y, z: a.state.pos.z });
       const cutoff = time - LAGCOMP_WINDOW_MS;
       while (h.length > 1 && h[0].t < cutoff) h.shift();
+      // Expire spawn protection visually once its window passes.
+      a.state.invuln = !!(a.invulnUntil && time < a.invulnUntil);
     }
     const proj: ProjectileState[] = room.projectiles.map((p) => ({ id: p.id, kind: p.kind, pos: p.pos }));
     broadcast(room, {
@@ -1712,4 +2042,5 @@ createRoom(
 
 httpServer.listen(PORT, () => {
   console.log(`Drunkr listening on :${PORT}  (client + ws, same origin)  default map: ${MAPS[DEFAULT_MAP].name}  bots: ${DEFAULT_BOTS}`);
+  startConsole();
 });

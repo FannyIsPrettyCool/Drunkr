@@ -124,7 +124,7 @@ export function stepMovement(
     // horizontal resolution would fling them to the arena edge.
     if (
       ry !== null && state.vel.y <= 1 &&
-      state.pos.y >= ry - 1.4 && state.pos.y <= ry + 0.5 &&
+      state.pos.y >= ry - 0.7 && state.pos.y <= ry + 0.5 &&
       (!state.grounded || ry >= state.pos.y)
     ) {
       state.pos.y = ry;
@@ -142,14 +142,17 @@ export function stepMovement(
     startSlide();
   }
 
-  // Jump pads: stepping on one launches you (overrides velocity).
+  // Jump pads: stepping on one launches you. The pad's horizontal launch is
+  // ADDED to your current momentum (not overwritten) so you keep the speed you
+  // carried in — bhop/slide into a pad to fly further. The vertical pop is set
+  // (you're grounded here, so vel.y ≈ 0) so every launch still gets the same lift.
   let padLaunched = false;
   if (state.grounded) {
     const launch = world.padLaunch(state.pos);
     if (launch) {
-      state.vel.x = launch.x;
+      state.vel.x += launch.x;
       state.vel.y = launch.y;
-      state.vel.z = launch.z;
+      state.vel.z += launch.z;
       state.grounded = false;
       state.sliding = false;
       padLaunched = true;

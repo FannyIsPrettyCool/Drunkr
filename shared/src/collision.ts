@@ -1,6 +1,9 @@
 import type { GameMap, MapBox } from "./map.js";
 import type { Vec3 } from "./math.js";
 
+/** Tallest ledge you can walk straight up without jumping (step-up height). */
+const STEP_HEIGHT = 0.55;
+
 export interface AABB {
   minX: number; minY: number; minZ: number;
   maxX: number; maxY: number; maxZ: number;
@@ -163,24 +166,48 @@ export class CollisionWorld {
     let grounded = false;
     let hitWall = false;
 
-    // --- X axis ---
-    pos.x += vel.x * dt;
-    for (const b of this.boxes) {
-      if (!this.overlaps(pos, radius, height, b)) continue;
-      if (vel.x > 0) pos.x = b.minX - radius;
-      else if (vel.x < 0) pos.x = b.maxX + radius;
-      vel.x = 0;
-      hitWall = true;
-    }
+    // Pre-move snapshot + original horizontal intent (used for the step-up retry).
+    const sx = pos.x, sy = pos.y, sz = pos.z;
+    const ovx = vel.x, ovz = vel.z;
+    const movedHoriz = (ovx * ovx + ovz * ovz) > 1e-8;
 
-    // --- Z axis ---
-    pos.z += vel.z * dt;
-    for (const b of this.boxes) {
-      if (!this.overlaps(pos, radius, height, b)) continue;
-      if (vel.z > 0) pos.z = b.minZ - radius;
-      else if (vel.z < 0) pos.z = b.maxZ + radius;
-      vel.z = 0;
-      hitWall = true;
+    // --- Horizontal resolution (X then Z) ---
+    hitWall = this.moveAxisX(pos, vel, radius, height, dt);
+    hitWall = this.moveAxisZ(pos, vel, radius, height, dt) || hitWall;
+
+    // --- Step-up ---
+    // If a wall stopped us while we were walking (not jumping up), retry the
+    // same horizontal move lifted by one step height. If that clears the
+    // obstacle, settle onto the step's top surface. This removes the "invisible
+    // wall" at the top of ramps / platform seams and lets you walk up low
+    // ledges smoothly instead of being stopped dead or snapped on top.
+    if (hitWall && movedHoriz && vel.y <= 0.1) {
+      const fx = pos.x, fz = pos.z, fvx = vel.x, fvz = vel.z;
+      const flatProgress = (fx - sx) * (fx - sx) + (fz - sz) * (fz - sz);
+
+      pos.x = sx; pos.y = sy + STEP_HEIGHT; pos.z = sz;
+      vel.x = ovx; vel.z = ovz;
+      this.moveAxisX(pos, vel, radius, height, dt);
+      this.moveAxisZ(pos, vel, radius, height, dt);
+      const stepProgress = (pos.x - sx) * (pos.x - sx) + (pos.z - sz) * (pos.z - sz);
+
+      if (stepProgress > flatProgress + 1e-4 && !this.overlapsAny(pos, radius, height)) {
+        // We cleared the obstacle up high — drop onto the step's top surface.
+        let groundY = sy, found = false;
+        for (const b of this.boxes) {
+          if (
+            pos.x - radius < b.maxX && pos.x + radius > b.minX &&
+            pos.z - radius < b.maxZ && pos.z + radius > b.minZ &&
+            b.maxY <= sy + STEP_HEIGHT + 1e-3 && b.maxY >= sy - 1e-3 &&
+            (!found || b.maxY > groundY)
+          ) { groundY = b.maxY; found = true; }
+        }
+        if (found) { pos.y = groundY; grounded = true; } else pos.y = sy;
+        hitWall = false; // we climbed it rather than bonking into it
+      } else {
+        // The lift didn't help (a real wall) — keep the blocked result.
+        pos.x = fx; pos.y = sy; pos.z = fz; vel.x = fvx; vel.z = fvz;
+      }
     }
 
     // --- Y axis ---
@@ -198,12 +225,50 @@ export class CollisionWorld {
 
     // --- Oriented (Y-rotated) boxes ---
     for (const o of this.obbs) {
-      const r = this.resolveOBB(pos, vel, radius, height, o);
+      const r = this.resolveOBB(pos, vel, radius, height, o, STEP_HEIGHT);
       grounded = grounded || r.grounded;
       hitWall = hitWall || r.hitWall;
     }
 
     return { grounded, hitWall };
+  }
+
+  /** Move along X and resolve box overlaps. Returns true if a wall was hit.
+   * Pushes out toward the nearer face even when `vel.x` is ~0 so the capsule
+   * can never stay embedded (an embedding is what used to get snapped onto a
+   * box top by the Y axis, teleporting/launching the player). */
+  private moveAxisX(pos: Vec3, vel: Vec3, radius: number, height: number, dt: number): boolean {
+    pos.x += vel.x * dt;
+    let hit = false;
+    for (const b of this.boxes) {
+      if (!this.overlaps(pos, radius, height, b)) continue;
+      if (vel.x > 0) pos.x = b.minX - radius;
+      else if (vel.x < 0) pos.x = b.maxX + radius;
+      else pos.x = (pos.x - b.minX < b.maxX - pos.x) ? b.minX - radius : b.maxX + radius;
+      vel.x = 0;
+      hit = true;
+    }
+    return hit;
+  }
+
+  /** Move along Z and resolve box overlaps (see {@link moveAxisX}). */
+  private moveAxisZ(pos: Vec3, vel: Vec3, radius: number, height: number, dt: number): boolean {
+    pos.z += vel.z * dt;
+    let hit = false;
+    for (const b of this.boxes) {
+      if (!this.overlaps(pos, radius, height, b)) continue;
+      if (vel.z > 0) pos.z = b.minZ - radius;
+      else if (vel.z < 0) pos.z = b.maxZ + radius;
+      else pos.z = (pos.z - b.minZ < b.maxZ - pos.z) ? b.minZ - radius : b.maxZ + radius;
+      vel.z = 0;
+      hit = true;
+    }
+    return hit;
+  }
+
+  private overlapsAny(pos: Vec3, radius: number, height: number): boolean {
+    for (const b of this.boxes) if (this.overlaps(pos, radius, height, b)) return true;
+    return false;
   }
 
   /**
@@ -213,7 +278,7 @@ export class CollisionWorld {
    * penetration axis (up / down / horizontal-along-face).
    */
   private resolveOBB(
-    pos: Vec3, vel: Vec3, radius: number, height: number, o: OBBY,
+    pos: Vec3, vel: Vec3, radius: number, height: number, o: OBBY, step: number,
   ): { grounded: boolean; hitWall: boolean } {
     const feet = pos.y, head = pos.y + height;
     if (head <= o.cy - o.hy || feet >= o.cy + o.hy) return { grounded: false, hitWall: false };
@@ -250,8 +315,11 @@ export class CollisionWorld {
       horizPen = radius - dist;
     }
 
-    // Resolve along the shallowest axis.
-    if (penUp <= horizPen && penUp <= penDown) {
+    // Resolve along the shallowest axis. "Up" (stepping onto the top) is only a
+    // candidate for small steps and when not jumping up, so grazing a tall
+    // angled wall pushes you out sideways instead of teleporting you on top.
+    const canStep = penUp <= step && vel.y <= 0.5;
+    if (canStep && penUp <= horizPen && penUp <= penDown) {
       pos.y = o.cy + o.hy;
       if (vel.y < 0) vel.y = 0;
       return { grounded: true, hitWall: false };

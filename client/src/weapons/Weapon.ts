@@ -3,6 +3,7 @@ import { WEAPONS, DEFAULT_WEAPON, MOVE, type WeaponDef } from "@drunkr/shared";
 import type { LocalPlayer } from "../entities/LocalPlayer.js";
 import type { RemotePlayers } from "../entities/RemotePlayers.js";
 import type { Network } from "../net/Network.js";
+import type { Particles } from "../render/Particles.js";
 
 /** Equip time (s) — you can't fire for a moment after switching weapons. */
 const SWITCH_DELAY = 0.25;
@@ -58,6 +59,9 @@ export class Weapon {
   /** Weapon-bob phase, advanced by player movement. */
   private bobTime = 0;
 
+  /** Admin toggle: never run out of ammo / reload. */
+  infiniteAmmo = false;
+
   private readonly baseFov: number;
   private ads = false;
   /** Smoothed zoom factor (0 = hip, 1 = fully scoped). */
@@ -70,6 +74,7 @@ export class Weapon {
     private remotes: RemotePlayers,
     private net: Network,
     private local: LocalPlayer,
+    private particles: Particles,
     private cb: WeaponCallbacks,
   ) {
     this.baseFov = camera.fov;
@@ -312,13 +317,13 @@ export class Weapon {
       }
     } else if (
       wantFire && this.cooldown <= 0 && !this.local.dead &&
-      (this.def.magazine === 0 || this.ammo > 0)
+      (this.def.magazine === 0 || this.ammo > 0 || this.infiniteAmmo)
     ) {
       this.fire();
     }
 
     // Auto-reload when empty — delayed so the shot sound finishes before the reload sound starts.
-    if (this.def.magazine > 0 && this.ammo === 0 && !this.reloading) {
+    if (this.def.magazine > 0 && this.ammo === 0 && !this.reloading && !this.infiniteAmmo) {
       if (this.reloadDelayTimer > 0) {
         this.reloadDelayTimer -= dt;
         if (this.reloadDelayTimer <= 0) this.reload();
@@ -352,7 +357,7 @@ export class Weapon {
 
   private fire() {
     this.cooldown = 60 / this.def.fireRate;
-    if (this.def.magazine > 0) {
+    if (this.def.magazine > 0 && !this.infiniteAmmo) {
       this.ammo--;
       this.cb.onAmmo(this.ammo, this.def.magazine);
     }
@@ -395,6 +400,7 @@ export class Weapon {
     } else {
       this.flash();
       this.kick = 1;
+      this.particles.muzzle(this.muzzleWorld(), { x: forward.x, y: forward.y, z: forward.z });
     }
 
     // Recoil by weapon (melee has none).
@@ -449,6 +455,12 @@ export class Weapon {
       wallPoint = hitPoint.clone();
     }
 
+    // Impact particles: spark spray off walls, neon spray off players.
+    if (!this.def.melee) {
+      if (wallPoint) this.particles.impact(wallPoint, dir);
+      else if (hitId >= 0) this.particles.flesh(hitPoint);
+    }
+
     // Melee swings don't draw bullet tracers. Start the tracer at the gun's
     // muzzle (not the camera/eye) so it's visible — an eye-origin tracer runs
     // straight down the view axis and only shows up when strafing while firing.
@@ -469,7 +481,10 @@ export class Weapon {
     this.raycaster.set(origin, dir);
     this.raycaster.far = this.def.range;
     const hits = this.raycaster.intersectObjects(this.colliders, false);
-    if (hits.length) end.copy(hits[0].point);
+    if (hits.length) {
+      end.copy(hits[0].point);
+      this.particles.impact(end, { x: dir.x, y: dir.y, z: dir.z });
+    }
     this.spawnTracer(origin, dir, end);
   }
 

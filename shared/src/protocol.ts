@@ -13,16 +13,21 @@ export interface PlayerState {
   health: number;
   /** Hue (0..1) used to tint this player's avatar. */
   hue: number;
-  /** Kills / deaths for the scoreboard. */
+  /** Kills / deaths / assists for the scoreboard. */
   kills: number;
   deaths: number;
+  assists: number;
   dead: boolean;
+  /** Granted admin privileges (shows a crown + unlocks the admin panel). */
+  admin?: boolean;
   /** Currently-held weapon id (see WEAPONS). */
   weapon: string;
   /** Class id (see CLASSES). */
   cls: string;
   /** Invisible (Illusionist cloak) — remote clients hide the avatar. */
   invis: boolean;
+  /** Spawn-protected (invincible just after respawning) — shows a shield. */
+  invuln?: boolean;
   /** Posture for remote animation: 0 = standing, 1 = crouching, 2 = sliding. */
   posture?: number;
 }
@@ -156,6 +161,22 @@ export interface C_Use {
   held: boolean;
 }
 
+/** Admin-panel command. The server ignores it unless the actor has admin. */
+export interface C_Admin {
+  t: "admin";
+  /**
+   * One of: god | heal | give | slay | kick | tp | bring | bots | difficulty |
+   * map | killbots | slayall | boom | announce.
+   */
+  cmd: string;
+  /** Target player id (slay/kick/tp/bring/boom). */
+  target?: number;
+  /** String argument (weapon id, map id, difficulty, announce text). */
+  value?: string;
+  /** Numeric argument (e.g. bot count). */
+  amount?: number;
+}
+
 export type ClientMessage =
   | C_Join
   | C_Create
@@ -167,7 +188,8 @@ export type ClientMessage =
   | C_SwitchWeapon
   | C_Ability
   | C_VoteMap
-  | C_Use;
+  | C_Use
+  | C_Admin;
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -226,6 +248,8 @@ export interface S_Kill {
   killer: number;
   victim: number;
   head: boolean;
+  /** Players who damaged the victim recently (excluding the killer) — assists. */
+  assists?: number[];
   /** Muzzle position of the lethal shot (for the victim's death-cam tracer). */
   from?: Vec3;
   /** Impact point of the lethal shot. */
@@ -324,6 +348,26 @@ export interface S_BombRoundEnd {
   scoreCT: number;
 }
 
+/** Tells a client its admin privilege changed (un/locks the admin panel). */
+export interface S_Admin {
+  t: "admin";
+  granted: boolean;
+}
+
+/** A transient on-screen message (admin announcements, admin-action feedback). */
+export interface S_Toast {
+  t: "toast";
+  text: string;
+  /** Visual style: a normal info toast or an admin/announce banner. */
+  kind?: "info" | "admin";
+}
+
+/** Force the receiving client to teleport its local player (admin tp/bring). */
+export interface S_Teleport {
+  t: "teleport";
+  pos: Vec3;
+}
+
 export type ServerMessage =
   | S_Welcome
   | S_RoomList
@@ -341,7 +385,10 @@ export type ServerMessage =
   | S_Explosion
   | S_BombRoundStart
   | S_BombEvent
-  | S_BombRoundEnd;
+  | S_BombRoundEnd
+  | S_Admin
+  | S_Toast
+  | S_Teleport;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);
