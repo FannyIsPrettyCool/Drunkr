@@ -22,6 +22,8 @@ export class Input {
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener("keydown", (e) => {
       this.keys.add(e.code);
+      // Tab would focus the next DOM element and drop pointer lock — swallow it.
+      if (e.code === "Tab") { e.preventDefault(); return; }
       if (e.code === "KeyR") this.onReload?.();
       if (e.code === "Digit1") this.onSwitch?.("ak");
       if (e.code === "Digit2") this.onSwitch?.("sniper");

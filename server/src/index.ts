@@ -647,7 +647,11 @@ function shockwaveSlam(room: Room, actor: Actor, origin?: Vec3) {
     if (a.id === actor.id || a.state.dead) continue;
     const dist = Math.hypot(a.state.pos.x - o.x, a.state.pos.y - o.y, a.state.pos.z - o.z);
     if (dist > SHOCKWAVE.radius) continue;
-    dealDamage(room, actor, a, SHOCKWAVE.damage, false);
+    if (room.world.segmentBlocked(o, a.state.pos)) continue; // no slamming through walls
+    // Gentle falloff: a close landing one-shots; the splash toward the edge chips.
+    const dmg = Math.round(SHOCKWAVE.damage * Math.pow(1 - dist / SHOCKWAVE.radius, 0.85));
+    if (dmg <= 0) continue;
+    dealDamage(room, actor, a, dmg, false);
   }
 }
 
@@ -2131,6 +2135,11 @@ wss.on("connection", (ws) => {
         // Server-authoritative: silently ignore unless this actor is an admin.
         if (actor.admin) handleAdmin(room, actor, msg);
         break;
+      case "chat": {
+        const text = String(msg.text ?? "").trim().slice(0, 120);
+        if (text) broadcast(room, { t: "chat", name: actor.state.name, text });
+        break;
+      }
     }
   });
 

@@ -80,6 +80,10 @@ export class Game {
   private pmSfxVal = document.getElementById("pm-sfx-val")!;
   private pmSelectedHue = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
 
+  private chatOpen = false;
+  private chatBar = document.getElementById("chat-bar")!;
+  private chatInput = document.getElementById("chat-input") as HTMLInputElement;
+
   private localId: number;
   private currentMapId: string;
   private roster = new Map<number, PlayerState>();
@@ -210,11 +214,12 @@ export class Game {
         }
         this.sfx.startAmbience();
         this.hidePauseMenu();
-      } else if (!this.local.dead && !this.adminPanel.open) {
+      } else if (!this.local.dead && !this.adminPanel.open && !this.chatOpen) {
         this.showPauseMenu(false);
       }
     };
     this.initPauseMenu();
+    this.initChat();
 
     // Admin panel (only usable once the server grants admin).
     this.adminPanel = new AdminPanel({
@@ -231,9 +236,14 @@ export class Game {
       onClose: () => this.closeAdmin(),
     });
     window.addEventListener("keydown", (e) => {
-      if (e.code !== "Backquote" || !this.isAdmin || !this.running || this.inIntermission) return;
-      // Don't steal the backtick while typing into a panel field.
+      // Don't steal keys while typing into any input / select.
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.code === "KeyY" && this.input.locked && !this.local.dead && !this.inIntermission) {
+        e.preventDefault();
+        this.openChat();
+        return;
+      }
+      if (e.code !== "Backquote" || !this.isAdmin || !this.running || this.inIntermission) return;
       e.preventDefault();
       if (this.adminPanel.open) this.closeAdmin(); else this.openAdmin();
     });
@@ -326,6 +336,36 @@ export class Game {
 
     // Resume button re-locks the pointer (which hides the menu via onLockChange).
     this.pmResumeBtn.addEventListener("click", () => this.input.requestLock());
+  }
+
+  private initChat() {
+    this.chatInput.addEventListener("keydown", (e) => {
+      if (e.code === "Enter") {
+        const text = this.chatInput.value.trim();
+        if (text) this.net.send({ t: "chat", text });
+        this.closeChat();
+        e.preventDefault();
+      } else if (e.code === "Escape") {
+        this.closeChat();
+        e.preventDefault();
+      }
+      e.stopPropagation();
+    });
+  }
+
+  private openChat() {
+    this.chatOpen = true;
+    this.chatInput.value = "";
+    this.chatBar.classList.remove("hidden");
+    document.exitPointerLock?.();
+    setTimeout(() => this.chatInput.focus(), 40);
+  }
+
+  private closeChat() {
+    this.chatOpen = false;
+    this.chatInput.value = "";
+    this.chatBar.classList.add("hidden");
+    this.input.requestLock();
   }
 
   private showPauseMenu(isDead: boolean) {
@@ -527,6 +567,9 @@ export class Game {
         break;
       case "bombroundend":
         this.onBombRoundEnd(msg);
+        break;
+      case "chat":
+        this.hud.addChatMessage(msg.name, msg.text);
         break;
     }
   }
