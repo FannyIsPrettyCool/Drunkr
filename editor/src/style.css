@@ -22,6 +22,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
   border-bottom: 1px solid #ffffff14;
   z-index: 10;
   font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 .brand { letter-spacing: 0.15rem; margin-right: 0.6rem; }
 .brand b { color: var(--cyan); }
@@ -40,7 +42,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 #topbar .primary { background: var(--cyan); color: #05060c; border: none; font-weight: bold; }
 #topbar .danger { color: var(--pink); border-color: var(--pink); }
 #topbar .sep { width: 1px; height: 22px; background: #ffffff22; margin: 0 0.2rem; }
-#topbar .mode.active { background: var(--cyan); color: #05060c; border-color: var(--cyan); font-weight: bold; }
+#topbar .mode.active, #topbar .toggle.active { background: var(--cyan); color: #05060c; border-color: var(--cyan); font-weight: bold; }
+#topbar .snaplbl { gap: 0.25rem; }
+#topbar .snaplbl input[type="number"] { width: 46px; background: #05060c; border: 1px solid #ffffff22; color: var(--fg); font: inherit; font-size: 0.75rem; padding: 0.2rem; }
+#topbar #undo, #topbar #redo { font-size: 1rem; padding: 0.15rem 0.5rem; line-height: 1; }
 
 #panel {
   position: fixed;
@@ -72,9 +77,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 .future { opacity: 0.4; font-size: 0.65rem; margin-top: 0.6rem; font-style: italic; }
 .help { opacity: 0.4; font-size: 0.66rem; line-height: 1.5; margin-top: 0.5rem; }
 
-#objlist { max-height: 230px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+#objlist { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .obj-row { padding: 0.25rem 0.5rem; background: #05060c; border: 1px solid transparent; cursor: pointer; }
 .obj-row:hover { border-color: #ffffff22; }
 .obj-row.active { border-color: var(--cyan); color: var(--cyan); }
+
+#panel h3 .dim { color: var(--fg); opacity: 0.4; font-weight: normal; letter-spacing: 0; }
+.grouplbl { font-size: 0.6rem; letter-spacing: 0.12rem; opacity: 0.45; margin: 0.5rem 0 0.2rem; }
+.multi-hint { font-size: 0.66rem; color: var(--pink); opacity: 0.9; margin-bottom: 0.3rem; }
+
+#prebuilt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.prebuilt {
+  padding: 0.4rem 0.4rem; background: #05060c; border: 1px solid #ffffff1a;
+  color: var(--fg); font: inherit; font-size: 0.7rem; cursor: pointer; text-align: left;
+}
+.prebuilt:hover { border-color: var(--cyan); color: var(--cyan); }
+
+#preview-pop {
+  position: fixed; z-index: 30; pointer-events: none;
+  background: #070a14ee; border: 1px solid var(--cyan);
+  box-shadow: 0 0 18px #18e0ff44; padding: 4px;
+}
+#preview-pop .pv-name { font-size: 0.66rem; color: var(--cyan); text-align: center; padding: 2px 0 3px; letter-spacing: 0.05rem; }
 
 .hidden { display: none !important; }

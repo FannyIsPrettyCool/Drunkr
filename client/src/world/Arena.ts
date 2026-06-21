@@ -1,6 +1,27 @@
 import * as THREE from "three";
-import { CollisionWorld, textureForBox, type GameMap, type Ramp } from "@drunkr/shared";
+import { CollisionWorld, textureForBox, type GameMap, type Ramp, type BoxShape, type Vec3 } from "@drunkr/shared";
 import { getTexture, applyBoxUV } from "../render/Textures.js";
+
+/**
+ * Visual geometry for a map primitive. Collision is always the enclosing AABB
+ * (see {@link BoxShape}), so these only change how a box looks, not how it blocks.
+ */
+export function shapeGeometry(shape: BoxShape | undefined, size: Vec3): THREE.BufferGeometry {
+  const { x: sx, y: sy, z: sz } = size;
+  if (shape === "cylinder") return new THREE.CylinderGeometry(0.5, 0.5, 1, 24).scale(sx, sy, sz);
+  if (shape === "sphere") return new THREE.SphereGeometry(0.5, 24, 16).scale(sx, sy, sz);
+  if (shape === "wedge") {
+    const s = new THREE.Shape();
+    s.moveTo(-sx / 2, -sy / 2);
+    s.lineTo(sx / 2, -sy / 2);
+    s.lineTo(-sx / 2, sy / 2);
+    s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth: sz, bevelEnabled: false });
+    g.translate(0, 0, -sz / 2);
+    return g;
+  }
+  return new THREE.BoxGeometry(sx, sy, sz);
+}
 
 /**
  * Builds the visual geometry for a map and exposes:
@@ -17,11 +38,12 @@ export class Arena {
     this.collision = new CollisionWorld(map);
 
     for (const box of map.boxes) {
-      const geo = new THREE.BoxGeometry(box.size.x, box.size.y, box.size.z);
+      const isBox = !box.shape || box.shape === "box";
+      const geo = shapeGeometry(box.shape, box.size);
       const tex = textureForBox(box);
       let mat: THREE.MeshStandardMaterial;
       if (tex) {
-        applyBoxUV(geo, box.size, tex);
+        if (isBox) applyBoxUV(geo, box.size, tex);
         const map3 = getTexture(tex);
         mat = new THREE.MeshStandardMaterial({
           map: map3,

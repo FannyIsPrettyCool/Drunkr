@@ -21,6 +21,12 @@
         </select>
       </label>
       <button id="add-box">+ Box</button>
+      <select id="add-shape" title="Add a shape primitive">
+        <option value="">+ Shape…</option>
+        <option value="cylinder">Cylinder</option>
+        <option value="sphere">Sphere</option>
+        <option value="wedge">Wedge</option>
+      </select>
       <button id="add-pad">+ Pad</button>
       <button id="add-ramp">+ Ramp</button>
       <button id="add-spawn">+ Spawn</button>
@@ -28,9 +34,16 @@
       <button class="mode active" data-mode="translate" title="Move (W)">Move</button>
       <button class="mode" data-mode="rotate" title="Rotate (E)">Rotate</button>
       <button class="mode" data-mode="scale" title="Scale (R)">Scale</button>
+      <button id="anchor" class="toggle active" title="Anchored resize: one side stays put while you scale (off = grow from center)">Anchor</button>
+      <label class="snaplbl" title="Snap moves/sizes to a grid step">Snap
+        <input id="snap-on" type="checkbox" checked />
+        <input id="snap-size" type="number" step="0.5" min="0.1" value="1" />
+      </label>
       <span class="sep"></span>
-      <button id="duplicate">Duplicate</button>
-      <button id="delete" class="danger">Delete</button>
+      <button id="undo" title="Undo (Ctrl+Z)">↶</button>
+      <button id="redo" title="Redo (Ctrl+Y)">↷</button>
+      <button id="duplicate" title="Duplicate (Ctrl+D)">Duplicate</button>
+      <button id="delete" class="danger" title="Delete (Del)">Delete</button>
       <span class="spacer"></span>
       <button id="import">Import…</button>
       <button id="export" class="primary">Export JSON</button>
@@ -49,21 +62,38 @@
 
       <section id="props" class="hidden">
         <h3 id="prop-title">OBJECT</h3>
+        <div class="multi-hint hidden" id="multi-hint"></div>
+        <div class="grouplbl">POSITION</div>
         <div class="row3">
           <label>X <input id="p-px" type="number" step="0.5" /></label>
           <label>Y <input id="p-py" type="number" step="0.5" /></label>
           <label>Z <input id="p-pz" type="number" step="0.5" /></label>
         </div>
+        <div class="grouplbl size-fields">SIZE</div>
         <div class="row3 size-fields">
           <label>W <input id="p-sx" type="number" step="0.5" /></label>
           <label>H <input id="p-sy" type="number" step="0.5" /></label>
           <label>D <input id="p-sz" type="number" step="0.5" /></label>
+        </div>
+        <div class="grouplbl rot-fields hidden">ROTATION °</div>
+        <div class="row3 rot-fields hidden">
+          <label>X <input id="p-rx" type="number" step="15" /></label>
+          <label>Y <input id="p-ry" type="number" step="15" /></label>
+          <label>Z <input id="p-rz" type="number" step="15" /></label>
         </div>
         <div class="row3 launch-fields hidden">
           <label>LvX <input id="p-lx" type="number" step="1" /></label>
           <label>LvY <input id="p-ly" type="number" step="1" /></label>
           <label>LvZ <input id="p-lz" type="number" step="1" /></label>
         </div>
+        <label class="field shape-fields hidden">SHAPE
+          <select id="p-shape">
+            <option value="box">Box</option>
+            <option value="cylinder">Cylinder</option>
+            <option value="sphere">Sphere</option>
+            <option value="wedge">Wedge</option>
+          </select>
+        </label>
         <label class="field dir-fields hidden">RISE DIR
           <select id="p-dir">
             <option value="0">+X</option>
@@ -81,18 +111,25 @@
         <label class="field texture-fields">TEXTURE
           <select id="p-texture"></select>
         </label>
-        <p class="future">Particle effects: coming soon.</p>
+      </section>
+
+      <section id="prebuilt-sec">
+        <h3>PREBUILTS <span class="dim">· hover to preview</span></h3>
+        <div id="prebuilt-grid"></div>
       </section>
 
       <section id="objlist-sec">
-        <h3>OBJECTS</h3>
+        <h3>OBJECTS <span class="dim">· ctrl-click = multi</span></h3>
         <div id="objlist"></div>
       </section>
 
       <p class="help">
-        Drag = orbit · wheel = zoom · right-drag = pan · click an object to select.
+        Drag = orbit · wheel = zoom · right-drag = pan · click = select<br />
+        Ctrl-click = multi-select · F = focus · Del = delete · Ctrl-Z = undo
       </p>
     </div>
+
+    <div id="preview-pop" class="hidden"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -1,5 +1,14 @@
 import type { Vec3 } from "./math.js";
 
+/**
+ * Visual primitive for a {@link MapBox}. Collision is always the enclosing
+ * axis-aligned bounding box of `size` regardless of shape (same approximation
+ * used for rotated boxes), so non-box shapes are cover/decoration that still
+ * block movement and bullets as a box.
+ */
+export type BoxShape = "box" | "cylinder" | "sphere" | "wedge";
+export const BOX_SHAPES: readonly BoxShape[] = ["box", "cylinder", "sphere", "wedge"];
+
 /** A box used for both rendering and collision. */
 export interface MapBox {
   /** Center position. */
@@ -14,6 +23,8 @@ export interface MapBox {
   rot?: Vec3;
   /** Optional texture key (see TEXTURE_KEYS). "none" forces a flat color. */
   texture?: string;
+  /** Optional visual primitive (default "box"). Collision stays AABB. */
+  shape?: BoxShape;
 }
 
 /** An angled launch pad: standing on it sets your velocity to `launch`. */

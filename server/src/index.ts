@@ -48,6 +48,8 @@ import {
   NavGrid,
   stepMovement,
   TEXTURE_KEYS,
+  BOX_SHAPES,
+  type BoxShape,
   type ProjectileState,
   type DecoyState,
 } from "@drunkr/shared";
@@ -288,6 +290,7 @@ function validateMap(m: unknown): GameMap | null {
   const col = (c: unknown) => (isFiniteNum(c) ? clamp(Math.floor(c), 0, 0xffffff) : 0x2a2e45);
 
   const validTex = (t: unknown) => typeof t === "string" && (t === "none" || (TEXTURE_KEYS as readonly string[]).includes(t));
+  const validShape = (s: unknown) => typeof s === "string" && (BOX_SHAPES as readonly string[]).includes(s) && s !== "box";
   const boxes = raw.boxes.slice(0, 600).map((b) => ({
     pos: vec(b.pos),
     size: { x: clamp(num((b.size as Vec3)?.x, 1), 0.1, 400), y: clamp(num((b.size as Vec3)?.y, 1), 0.1, 400), z: clamp(num((b.size as Vec3)?.z, 1), 0.1, 400) },
@@ -295,6 +298,7 @@ function validateMap(m: unknown): GameMap | null {
     ...(isFiniteNum(b.emissive) ? { emissive: col(b.emissive) } : {}),
     ...(b.rot ? { rot: vec(b.rot) } : {}),
     ...(validTex(b.texture) ? { texture: b.texture } : {}),
+    ...(validShape(b.shape) ? { shape: b.shape as BoxShape } : {}),
   }));
   const spawns = raw.spawns.slice(0, 64).map(vec);
   if (boxes.length === 0 || spawns.length === 0) return null;
