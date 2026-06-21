@@ -34,6 +34,8 @@ export interface MoveInput {
   maxJumps: number;
   /** Whether this actor can slide. */
   canSlide: boolean;
+  /** Knife (katana) out: grants an in-air thrust along your heading. */
+  airThrust?: boolean;
 }
 
 export function freshMoveState(pos: Vec3): MoveState {
@@ -107,11 +109,24 @@ export function stepMovement(
     }
   } else {
     airAccelerate(state.vel, input.wishX, input.wishZ, wishSpeed, MOVE.airAccel, dt);
+    // Knife-in-air thrust: accelerate along the current heading up to a higher
+    // air cap, so keeping the katana out while airborne builds/keeps momentum.
+    if (input.airThrust) {
+      const sp = Math.hypot(state.vel.x, state.vel.z);
+      if (sp > 0.5 && sp < MOVE.knifeAirMax) {
+        const add = Math.min(MOVE.knifeAirAccel * dt, MOVE.knifeAirMax - sp);
+        state.vel.x += (state.vel.x / sp) * add;
+        state.vel.z += (state.vel.z / sp) * add;
+      }
+    }
   }
 
   state.vel.y -= MOVE.gravity * dt;
 
-  const res = world.move(state.pos, state.vel, MOVE.radius, MOVE.height, dt);
+  // Crouch-jump: while crouched in the air you tuck your legs, raising the
+  // step-up reach so you can mantle ledges just out of a normal jump's reach.
+  const stepHeight = input.crouch && !state.grounded ? MOVE.crouchStepHeight : MOVE.stepHeight;
+  const res = world.move(state.pos, state.vel, MOVE.radius, MOVE.height, dt, stepHeight);
   state.grounded = res.grounded && !jumped;
 
   // Ramps: snap to the slope surface when walking on one (lets you climb).

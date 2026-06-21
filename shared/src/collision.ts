@@ -144,6 +144,7 @@ export class CollisionWorld {
     radius: number,
     height: number,
     dt: number,
+    stepHeight: number = STEP_HEIGHT,
   ): { grounded: boolean; hitWall: boolean } {
     // Sub-step so high speed (bhop, dash, jump pads, blink) can't tunnel
     // through walls or the floor in a single frame.
@@ -153,7 +154,7 @@ export class CollisionWorld {
     let grounded = false;
     let hitWall = false;
     for (let s = 0; s < steps; s++) {
-      const r = this.stepAxes(pos, vel, radius, height, sdt);
+      const r = this.stepAxes(pos, vel, radius, height, sdt, stepHeight);
       grounded = grounded || r.grounded;
       hitWall = hitWall || r.hitWall;
     }
@@ -161,7 +162,7 @@ export class CollisionWorld {
   }
 
   private stepAxes(
-    pos: Vec3, vel: Vec3, radius: number, height: number, dt: number,
+    pos: Vec3, vel: Vec3, radius: number, height: number, dt: number, stepHeight: number,
   ): { grounded: boolean; hitWall: boolean } {
     let grounded = false;
     let hitWall = false;
@@ -185,7 +186,7 @@ export class CollisionWorld {
       const fx = pos.x, fz = pos.z, fvx = vel.x, fvz = vel.z;
       const flatProgress = (fx - sx) * (fx - sx) + (fz - sz) * (fz - sz);
 
-      pos.x = sx; pos.y = sy + STEP_HEIGHT; pos.z = sz;
+      pos.x = sx; pos.y = sy + stepHeight; pos.z = sz;
       vel.x = ovx; vel.z = ovz;
       this.moveAxisX(pos, vel, radius, height, dt);
       this.moveAxisZ(pos, vel, radius, height, dt);
@@ -198,7 +199,7 @@ export class CollisionWorld {
           if (
             pos.x - radius < b.maxX && pos.x + radius > b.minX &&
             pos.z - radius < b.maxZ && pos.z + radius > b.minZ &&
-            b.maxY <= sy + STEP_HEIGHT + 1e-3 && b.maxY >= sy - 1e-3 &&
+            b.maxY <= sy + stepHeight + 1e-3 && b.maxY >= sy - 1e-3 &&
             (!found || b.maxY > groundY)
           ) { groundY = b.maxY; found = true; }
         }
@@ -225,7 +226,7 @@ export class CollisionWorld {
 
     // --- Oriented (Y-rotated) boxes ---
     for (const o of this.obbs) {
-      const r = this.resolveOBB(pos, vel, radius, height, o, STEP_HEIGHT);
+      const r = this.resolveOBB(pos, vel, radius, height, o, stepHeight);
       grounded = grounded || r.grounded;
       hitWall = hitWall || r.hitWall;
     }

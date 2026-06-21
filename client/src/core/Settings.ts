@@ -13,6 +13,8 @@ export interface Settings {
   musicVolume: number;
   /** Whether background music is enabled. */
   musicEnabled: boolean;
+  /** Sound-effects volume (0–1). */
+  sfxVolume: number;
 }
 
 export const QUALITY_HEIGHT: Record<Settings["quality"], number> = {
@@ -29,6 +31,7 @@ const DEFAULTS: Settings = {
   showFps: false,
   musicVolume: 0.5,
   musicEnabled: true,
+  sfxVolume: 0.8,
 };
 
 const KEY = "drunkr.settings";

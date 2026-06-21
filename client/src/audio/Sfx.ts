@@ -11,6 +11,8 @@ export class Sfx {
   private raw = new Map<string, ArrayBuffer>();
   private ambienceEl: HTMLAudioElement | null = null;
   enabled = true;
+  /** Master SFX volume (0–1); applied to the master gain (set lazily). */
+  private volume = 0.8;
 
   constructor() {
     const files = [
@@ -40,7 +42,7 @@ export class Sfx {
       const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctx();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 1.0;
+      this.master.gain.value = this.volume;
       this.master.connect(this.ctx.destination);
       for (const [name, ab] of this.raw) {
         void this.ctx.decodeAudioData(ab, buf => this.buffers.set(name, buf));
@@ -51,6 +53,12 @@ export class Sfx {
   }
 
   getContext(): AudioContext | null { return this.ctx; }
+
+  /** Set the master SFX volume (0–1). Safe to call before audio starts. */
+  setVolume(v: number) {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.master) this.master.gain.value = this.volume;
+  }
 
   /** Update the 3D audio listener to match the camera each frame. */
   updateListener(px: number, py: number, pz: number, fwdX: number, fwdY: number, fwdZ: number) {

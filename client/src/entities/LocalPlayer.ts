@@ -2,6 +2,8 @@ import * as THREE from "three";
 import {
   MOVE,
   DASH,
+  GRAPPLE,
+  SLIPSTREAM,
   clamp,
   stepMovement,
   type MoveState,
@@ -32,6 +34,8 @@ export class LocalPlayer {
   speedMul = 1;
   maxJumps = 1;
   canSlide = true;
+  /** Katana out → in-air thrust along heading (set by the equipped weapon). */
+  airThrust = false;
   /** Look-sensitivity multiplier (settings + scoped), updated by Game. */
   sensMul = 1;
 
@@ -45,6 +49,14 @@ export class LocalPlayer {
 
   /** Dash ability cooldown (s remaining). */
   dashCooldown = 0;
+  /** External slow multiplier (Chronos Time Bubble), 1 = normal. */
+  extSlowMul = 1;
+
+  // Grapple (Slinger): reel toward an anchored surface point for a short burst.
+  private grappleAnchor: THREE.Vector3 | null = null;
+  private grappleTime = 0;
+  /** Recent positions for Chronos Recall (newest last). */
+  private history: { t: number; x: number; y: number; z: number }[] = [];
 
   /** Procedural recoil applied to the camera (radians), decays each frame. */
   recoil = new THREE.Vector2();
@@ -139,6 +151,35 @@ export class LocalPlayer {
     this.crouching = false;
   }
 
+  /** Slinger Grapple: reel toward a surface point for a short burst. */
+  startGrapple(x: number, y: number, z: number) {
+    this.grappleAnchor = new THREE.Vector3(x, y, z);
+    this.grappleTime = GRAPPLE.durationMs / 1000;
+  }
+
+  /** Skater Slipstream: snap to a strong forward momentum burst along heading. */
+  slipstream() {
+    this.vel.x = this.lastWishX * SLIPSTREAM.boost;
+    this.vel.z = this.lastWishZ * SLIPSTREAM.boost;
+    this.vel.y = Math.max(this.vel.y, 0) + SLIPSTREAM.up;
+    this.grounded = false;
+  }
+
+  /** Chronos Recall: jump back to where we were `rewindMs` ago. */
+  recall(rewindMs: number) {
+    const cutoff = performance.now() - rewindMs;
+    let sample: { x: number; y: number; z: number } | null = null;
+    for (const s of this.history) {
+      if (s.t <= cutoff) sample = s; else break;
+    }
+    sample ??= this.history[0] ?? null;
+    if (sample) {
+      this.pos.set(sample.x, sample.y, sample.z);
+      this.vel.set(0, 0, 0);
+      this.grounded = false;
+    }
+  }
+
   /** Dash burst in the current move/look direction. Returns true if it fired. */
   tryDash(): boolean {
     if (this.dead || this.dashCooldown > 0) return false;
@@ -163,6 +204,23 @@ export class LocalPlayer {
       this.flyMove(input, dt, !this.noclip);
       this.updateCamera(0, dt);
       return { slideStarted: false, landed: false, jumped: false, padLaunched: false };
+    }
+
+    // Grapple: reel toward the anchor, overriding velocity for the burst.
+    if (this.grappleAnchor && this.grappleTime > 0) {
+      this.grappleTime -= dt;
+      const dx = this.grappleAnchor.x - this.pos.x;
+      const dy = this.grappleAnchor.y - this.pos.y;
+      const dz = this.grappleAnchor.z - this.pos.z;
+      const d = Math.hypot(dx, dy, dz);
+      if (d < GRAPPLE.minDist || this.grappleTime <= 0) {
+        this.grappleAnchor = null;
+      } else {
+        this.vel.x = (dx / d) * GRAPPLE.pull;
+        this.vel.y = (dy / d) * GRAPPLE.pull + GRAPPLE.up;
+        this.vel.z = (dz / d) * GRAPPLE.pull;
+        this.grounded = false;
+      }
     }
 
     this.crouching = input.crouching;
@@ -204,7 +262,8 @@ export class LocalPlayer {
         wishX: wx, wishZ: wz, wishSpeed,
         jump: input.jumping, jumpEdge,
         crouch: this.crouching, crouchEdge,
-        speedMul: this.speedMul * this.adminSpeedMul, maxJumps: this.maxJumps, canSlide: this.canSlide,
+        speedMul: this.speedMul * this.adminSpeedMul * this.extSlowMul, maxJumps: this.maxJumps, canSlide: this.canSlide,
+        airThrust: this.airThrust,
       },
       this.world,
       dt,
@@ -215,6 +274,11 @@ export class LocalPlayer {
     this.jumpsUsed = state.jumpsUsed;
 
     // Void falls are handled by Game (server-side death), not an in-place respawn.
+
+    // Record position history for Chronos Recall (keep ~4s).
+    const tnow = performance.now();
+    this.history.push({ t: tnow, x: this.pos.x, y: this.pos.y, z: this.pos.z });
+    while (this.history.length > 1 && this.history[0].t < tnow - 4000) this.history.shift();
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.bobTime += dt * speed;

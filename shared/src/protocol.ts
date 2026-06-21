@@ -39,6 +39,13 @@ export interface ProjectileState {
   pos: Vec3;
 }
 
+/** A Mirage decoy hologram, sent in snapshots so clients can render it. */
+export interface DecoyState {
+  id: number;
+  pos: Vec3;
+  hue: number;
+}
+
 // ---------------------------------------------------------------------------
 // Client -> Server
 // ---------------------------------------------------------------------------
@@ -222,6 +229,8 @@ export interface S_Snapshot {
   players: PlayerState[];
   /** Live grenades to render. */
   proj?: ProjectileState[];
+  /** Live Mirage decoy holograms to render. */
+  decoys?: DecoyState[];
 }
 
 export interface S_Join {
@@ -368,6 +377,21 @@ export interface S_Teleport {
   pos: Vec3;
 }
 
+/** Push the receiving client's local player (Magnetar Pull / Bulwark Repulse). */
+export interface S_Impulse {
+  t: "impulse";
+  vel: Vec3;
+}
+
+/** Slow the receiving client's local player for a while (Chronos Time Bubble). */
+export interface S_Slow {
+  t: "slow";
+  /** Movement-speed multiplier (<1 slows). */
+  mul: number;
+  /** Duration in ms. */
+  ms: number;
+}
+
 export type ServerMessage =
   | S_Welcome
   | S_RoomList
@@ -388,7 +412,9 @@ export type ServerMessage =
   | S_BombRoundEnd
   | S_Admin
   | S_Toast
-  | S_Teleport;
+  | S_Teleport
+  | S_Impulse
+  | S_Slow;
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);

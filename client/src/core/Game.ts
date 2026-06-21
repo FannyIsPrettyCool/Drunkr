@@ -16,7 +16,11 @@ import {
   SHOCKWAVE,
   BLOODLUST,
   SIPHON,
+  GRAPPLE,
+  WALLKICK,
+  RECALL,
   type AbilityId,
+  type DecoyState,
   type PlayerState,
   type S_Welcome,
   type S_Intermission,
@@ -38,7 +42,7 @@ import { HUD } from "../ui/HUD.js";
 import { AdminPanel } from "../ui/AdminPanel.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
-import { settings, QUALITY_HEIGHT } from "./Settings.js";
+import { settings, saveSettings, QUALITY_HEIGHT } from "./Settings.js";
 import type { Network } from "../net/Network.js";
 
 export class Game {
@@ -47,6 +51,8 @@ export class Game {
   private speedLines = new SpeedLines();
   /** True while the local player has spawn protection (cleared on first shot). */
   private protectActive = false;
+  /** Shockwave launched and waiting to slam on landing. */
+  private shockwavePending = false;
   private arena: Arena;
   private local: LocalPlayer;
   private remotes: RemotePlayers;
@@ -70,6 +76,8 @@ export class Game {
   private pmMusicOn = document.getElementById("pm-music-on") as HTMLInputElement;
   private pmMusicVol = document.getElementById("pm-music-vol") as HTMLInputElement;
   private pmMusicVal = document.getElementById("pm-music-val")!;
+  private pmSfxVol = document.getElementById("pm-sfx-vol") as HTMLInputElement;
+  private pmSfxVal = document.getElementById("pm-sfx-val")!;
   private pmSelectedHue = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
 
   private localId: number;
@@ -90,7 +98,10 @@ export class Game {
   private abilityCd: Record<string, number> = {};
   /** Live grenade meshes by projectile id. */
   private projMeshes = new Map<number, THREE.Mesh>();
+  private decoyMeshes = new Map<number, THREE.Mesh>();
+  private slowTimer = 0;
   private losRay = new THREE.Raycaster();
+  private aimRaycaster = new THREE.Raycaster();
   private footstepTimer = 0;
   private reloadSoundFired = false;
   /** Death-cam: line + muzzle marker showing where the lethal shot came from. */
@@ -301,6 +312,18 @@ export class Game {
       if (el) { el.value = String(v); (document.getElementById("set-music-val")!).textContent = String(v); }
     });
 
+    // SFX volume.
+    this.pmSfxVol.value = String(Math.round(settings.sfxVolume * 100));
+    this.pmSfxVal.textContent = this.pmSfxVol.value;
+    this.sfx.setVolume(settings.sfxVolume);
+    this.pmSfxVol.addEventListener("input", () => {
+      const v = Number(this.pmSfxVol.value);
+      this.pmSfxVal.textContent = String(v);
+      settings.sfxVolume = v / 100;
+      this.sfx.setVolume(settings.sfxVolume);
+      saveSettings();
+    });
+
     // Resume button re-locks the pointer (which hides the menu via onLockChange).
     this.pmResumeBtn.addEventListener("click", () => this.input.requestLock());
   }
@@ -352,6 +375,7 @@ export class Game {
           if (p.id === this.localId) this.syncLocal(p);
         }
         this.syncProjectiles(msg.proj ?? []);
+        this.syncDecoys(msg.decoys ?? []);
         break;
       }
       case "pjoin":
@@ -391,6 +415,7 @@ export class Game {
           this.resetAbilityCooldowns();
           this.hud.setDead(true);
           this.protectActive = false;
+          this.shockwavePending = false;
           this.hud.setProtected(false);
           this.sfx.death();
           if (msg.from && msg.at) {
@@ -484,6 +509,16 @@ export class Game {
         this.fellSent = false;
         break;
       }
+      case "impulse":
+        // Pull / Repulse from another player's ability.
+        this.local.applyImpulse(msg.vel.x, msg.vel.y, msg.vel.z);
+        break;
+      case "slow":
+        // Time Bubble: temporarily slow our movement.
+        this.local.extSlowMul = msg.mul;
+        clearTimeout(this.slowTimer);
+        this.slowTimer = window.setTimeout(() => { this.local.extSlowMul = 1; }, msg.ms);
+        break;
       case "bombstart":
         this.onBombRoundStart(msg);
         break;
@@ -567,12 +602,13 @@ export class Game {
       this.local.setWorld(this.arena.collision);
     }
 
-    for (const mesh of this.projMeshes.values()) {
+    for (const mesh of [...this.projMeshes.values(), ...this.decoyMeshes.values()]) {
       this.renderer.scene.remove(mesh);
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
     }
     this.projMeshes.clear();
+    this.decoyMeshes.clear();
     this.particles.clear();
 
     this.roster.clear();
@@ -788,6 +824,7 @@ export class Game {
     const def = WEAPONS[id];
     this.local.speedMul = def?.speedMul ?? 1;
     this.local.maxJumps = def?.doubleJump ? 2 : 1;
+    this.local.airThrust = !!def?.melee;
   }
 
   private eyePos() {
@@ -855,11 +892,16 @@ export class Game {
         this.net.send({ t: "ability", ability: "fortify" });
         this.sfx.fortify();
         break;
-      case "shockwave":
+      case "shockwave": {
         this.net.send({ t: "ability", ability: "shockwave" });
-        this.local.applyImpulse(0, SHOCKWAVE.selfVy, 0);
+        // Dramatic launch forward (look heading) + up. The AoE slam fires when
+        // we land (see the landing check in loop()).
+        const fx = -Math.sin(this.local.yaw), fz = -Math.cos(this.local.yaw);
+        this.local.applyImpulse(fx * SHOCKWAVE.launchForward, SHOCKWAVE.launchUp, fz * SHOCKWAVE.launchForward);
+        this.shockwavePending = true;
         this.sfx.shockwave();
         break;
+      }
       case "bloodlust":
         this.net.send({ t: "ability", ability: "bloodlust" });
         this.startBloodlust();
@@ -870,6 +912,61 @@ export class Game {
         this.net.send({ t: "ability", ability: "siphon" });
         this.sfx.shockwave();
         break;
+      case "grapple": {
+        // Reel toward the surface we're looking at (if any within range).
+        const { o, d } = this.aimRay();
+        this.aimRaycaster.set(new THREE.Vector3(o.x, o.y, o.z), new THREE.Vector3(d.x, d.y, d.z).normalize());
+        this.aimRaycaster.far = GRAPPLE.range;
+        const hit = this.aimRaycaster.intersectObjects(this.arena.colliders, false)[0];
+        if (hit) {
+          this.local.startGrapple(hit.point.x, hit.point.y, hit.point.z);
+          this.sfx.dash();
+          this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 8);
+        } else used = false;
+        break;
+      }
+      case "wallkick":
+        used = this.tryWallKick();
+        if (used) this.sfx.dash();
+        break;
+      case "slipstream":
+        this.local.slipstream();
+        this.sfx.dash();
+        this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 10);
+        break;
+      case "recall": {
+        const before = { x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z };
+        this.local.recall(RECALL.rewindMs);
+        this.net.send({ t: "ability", ability: "recall" });
+        this.sfx.blink();
+        const col = new THREE.Color().setHSL(this.roster.get(this.localId)?.hue ?? 0.5, 0.85, 0.55).getHex();
+        this.particles.spawnBurst(before, col);
+        this.particles.spawnBurst({ x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z }, col);
+        break;
+      }
+      case "timebubble":
+        this.net.send({ t: "ability", ability: "timebubble", origin: this.eyePos() });
+        this.sfx.cloak();
+        break;
+      case "pull":
+        this.net.send({ t: "ability", ability: "pull", origin: this.eyePos() });
+        this.sfx.shockwave();
+        break;
+      case "reflect":
+        this.net.send({ t: "ability", ability: "reflect" });
+        this.sfx.fortify();
+        this.hud.banner("REFLECT");
+        break;
+      case "repulse":
+        this.net.send({ t: "ability", ability: "repulse", origin: this.eyePos() });
+        this.sfx.shockwave();
+        break;
+      case "decoy": {
+        const { o, d } = this.aimRay();
+        this.net.send({ t: "ability", ability: "decoy", origin: o, dir: d });
+        this.sfx.cloak();
+        break;
+      }
     }
     if (used) this.abilityCd[id] = now + def.cooldownMs;
   }
@@ -885,6 +982,56 @@ export class Game {
     const base = WEAPONS[this.weapon.def.id]?.speedMul ?? 1;
     this.local.speedMul = base * BLOODLUST.speedMul;
     setTimeout(() => this.applyWeaponMods(this.weapon.def.id), BLOODLUST.durationMs);
+  }
+
+  /** Skater Wall Kick: if airborne next to a wall, shove off it. */
+  private tryWallKick(): boolean {
+    if (this.local.grounded) return false;
+    const origin = new THREE.Vector3(this.local.pos.x, this.local.pos.y + 1, this.local.pos.z);
+    const dirs: [number, number, number][] = [
+      [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1],
+      [0.7, 0, 0.7], [0.7, 0, -0.7], [-0.7, 0, 0.7], [-0.7, 0, -0.7],
+    ];
+    for (const [dx, dy, dz] of dirs) {
+      this.aimRaycaster.set(origin, new THREE.Vector3(dx, dy, dz).normalize());
+      this.aimRaycaster.far = WALLKICK.range;
+      if (this.aimRaycaster.intersectObjects(this.arena.colliders, false).length > 0) {
+        // Kick directly away from the probed wall, plus a vertical boost.
+        const away = new THREE.Vector3(-dx, 0, -dz).normalize();
+        this.local.applyImpulse(away.x * WALLKICK.push, WALLKICK.up, away.z * WALLKICK.push);
+        this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 8);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Reconcile rendered Mirage decoy holograms with the snapshot. */
+  private syncDecoys(decoys: DecoyState[]) {
+    const seen = new Set<number>();
+    for (const d of decoys) {
+      seen.add(d.id);
+      let mesh = this.decoyMeshes.get(d.id);
+      if (!mesh) {
+        const col = new THREE.Color().setHSL(d.hue, 0.85, 0.6);
+        mesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(MOVE.radius, MOVE.radius, MOVE.height, 10),
+          new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.45, depthWrite: false }),
+        );
+        mesh.renderOrder = 4;
+        this.renderer.scene.add(mesh);
+        this.decoyMeshes.set(d.id, mesh);
+      }
+      mesh.position.set(d.pos.x, d.pos.y + MOVE.height / 2, d.pos.z);
+    }
+    for (const [id, mesh] of this.decoyMeshes) {
+      if (!seen.has(id)) {
+        this.renderer.scene.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+        this.decoyMeshes.delete(id);
+      }
+    }
   }
 
   /** Reconcile rendered grenade meshes with the snapshot's projectile list. */
@@ -1081,6 +1228,12 @@ export class Game {
     if (mv.landed) this.sfx.land();
     if (mv.slideStarted) this.sfx.slide();
     if (mv.padLaunched) { this.sfx.pad(); this.particles.pad(this.local.pos); }
+    // Shockwave: detonate the AoE slam where we land (server validates + applies
+    // damage; it broadcasts the explosion back so the visual plays for everyone).
+    if (mv.landed && this.shockwavePending) {
+      this.shockwavePending = false;
+      this.net.send({ t: "ability", ability: "shockwaveSlam", origin: { x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z } });
+    }
 
     // Camera shake (decays), applied on top of the camera the player set.
     if (this.shake > 0) {

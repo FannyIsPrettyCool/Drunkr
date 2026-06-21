@@ -15,14 +15,16 @@ export const MOVE = {
   speed: 9,
   /** Ground acceleration (higher = snappier). */
   groundAccel: 11,
-  /** Air acceleration applied along the wish direction. */
-  airAccel: 14,
+  /** Air acceleration applied along the wish direction. Higher = air-strafing
+   * redirects (and builds speed) faster, so good strafe timing is rewarded. */
+  airAccel: 20,
   /**
    * Air speed cap: the most the air-strafe accelerate can add *along the wish
    * direction*. Keeping this small is the trick behind bhop — strafing turns
-   * the wish dir perpendicular to your velocity, so you keep gaining speed.
+   * the wish dir perpendicular to your velocity, so you keep gaining speed. The
+   * bigger this is the more each well-timed strafe adds (skill reward).
    */
-  airCap: 1.2,
+  airCap: 1.8,
   /**
    * Ground friction (per second). High so the player stops crisply on the
    * ground (no ice) — momentum is only kept in the air / on bhop landings.
@@ -42,6 +44,17 @@ export const MOVE = {
   radius: 0.4,
   /** Total player height (feet to crown). */
   height: 1.8,
+  /** Knife-in-air thrust: while airborne with the katana out you accelerate
+   * along your current heading (rewards aggressive knife movement), up to a
+   * higher air speed than other weapons allow. */
+  knifeAirAccel: 14,
+  knifeAirMax: 28,
+  /** Normal step-up height (walk up small ledges without jumping). */
+  stepHeight: 0.55,
+  /** Crouch-jump step-up: while crouched in the air you tuck your legs and can
+   * mantle onto ledges that are otherwise just out of reach (CS/Valorant-style
+   * crouch-jump). */
+  crouchStepHeight: 0.95,
 };
 
 /** Crouch-slide tuning. A slide commits your direction and bleeds momentum. */
@@ -94,7 +107,10 @@ export const BOMB = {
 
 export type AbilityId =
   | "dash" | "updraft" | "invis" | "confusion" | "flash" | "frag"
-  | "blink" | "fortify" | "shockwave" | "bloodlust" | "siphon";
+  | "blink" | "fortify" | "shockwave" | "bloodlust" | "siphon"
+  // New abilities (see the classes below).
+  | "grapple" | "wallkick" | "slipstream" | "recall" | "timebubble"
+  | "pull" | "reflect" | "repulse" | "decoy";
 
 export interface AbilityDef {
   id: AbilityId;
@@ -116,6 +132,16 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
   shockwave: { id: "shockwave", name: "Shockwave", cooldownMs: 10000, server: true },
   bloodlust: { id: "bloodlust", name: "Bloodlust", cooldownMs: 11000, server: true },
   siphon: { id: "siphon", name: "Siphon", cooldownMs: 9000, server: true },
+  // --- New abilities ---
+  grapple: { id: "grapple", name: "Grapple", cooldownMs: 6000, server: false },
+  wallkick: { id: "wallkick", name: "Wall Kick", cooldownMs: 2500, server: false },
+  slipstream: { id: "slipstream", name: "Slipstream", cooldownMs: 7000, server: false },
+  recall: { id: "recall", name: "Recall", cooldownMs: 12000, server: true },
+  timebubble: { id: "timebubble", name: "Time Bubble", cooldownMs: 13000, server: true },
+  pull: { id: "pull", name: "Pull", cooldownMs: 9000, server: true },
+  reflect: { id: "reflect", name: "Reflect", cooldownMs: 10000, server: true },
+  repulse: { id: "repulse", name: "Repulse", cooldownMs: 9000, server: true },
+  decoy: { id: "decoy", name: "Decoy", cooldownMs: 12000, server: true },
 };
 
 export interface ClassDef {
@@ -133,8 +159,20 @@ export const CLASSES: Record<string, ClassDef> = {
   juggernaut: { id: "juggernaut", name: "Juggernaut", F: "fortify", C: "shockwave" },
   phantom: { id: "phantom", name: "Phantom", F: "blink", C: "invis" },
   vampire: { id: "vampire", name: "Vampire", F: "bloodlust", C: "siphon" },
+  // --- New classes ---
+  slinger: { id: "slinger", name: "Slinger", F: "grapple", C: "dash" },
+  skater: { id: "skater", name: "Skater", F: "wallkick", C: "slipstream" },
+  vaulter: { id: "vaulter", name: "Vaulter", F: "dash", C: "blink" },
+  chronos: { id: "chronos", name: "Chronos", F: "recall", C: "timebubble" },
+  magnetar: { id: "magnetar", name: "Magnetar", F: "pull", C: "frag" },
+  bulwark: { id: "bulwark", name: "Bulwark", F: "reflect", C: "repulse" },
+  mirage: { id: "mirage", name: "Mirage", F: "decoy", C: "blink" },
+  saboteur: { id: "saboteur", name: "Saboteur", F: "confusion", C: "flash" },
 };
 export const CLASS_IDS = Object.keys(CLASSES);
+/** Classes the bots are allowed to roll (only those with bot-safe abilities —
+ * the new movement abilities are client-driven and would no-op for a bot). */
+export const BOT_CLASS_IDS = ["wind", "illusionist", "cyborg", "juggernaut", "phantom", "vampire"];
 export const DEFAULT_CLASS = "wind";
 
 export const INVIS = { durationMs: 3000, speedMul: 1.4 };
@@ -143,8 +181,12 @@ export const UPDRAFT = { vy: 13 };
 export const BLINK = { dist: 11 };
 /** Juggernaut Fortify: heal to full plus this much temporary overheal. */
 export const FORTIFY = { overheal: 50 };
-/** Juggernaut Shockwave: AoE damage burst around you (+ a small self-leap). */
-export const SHOCKWAVE = { radius: 7, damage: 65, selfVy: 9 };
+/**
+ * Juggernaut Shockwave: a launch-then-slam. Casting flings you dramatically
+ * forward + up; the AoE damage burst happens where you LAND (the slam), not on
+ * takeoff — so it doubles as a gap-closer and a ground-pound.
+ */
+export const SHOCKWAVE = { radius: 8, damage: 70, launchForward: 17, launchUp: 12.5 };
 /**
  * Vampire Bloodlust: a timed buff where the damage you deal heals you (lifesteal),
  * can briefly overheal, and you move a bit faster while it's active.
@@ -155,6 +197,26 @@ export const BLOODLUST = { durationMs: 5000, lifestealPct: 0.6, maxOverheal: 40,
  * and heals you per enemy hit (overheal up to maxOverheal).
  */
 export const SIPHON = { radius: 9, damage: 40, healPerHit: 22, maxOverheal: 50 };
+
+// --- New ability tuning ---
+/** Slinger Grapple: hook a surface you're looking at and reel toward it. */
+export const GRAPPLE = { range: 42, pull: 40, minDist: 2.5, durationMs: 650, up: 2 };
+/** Skater Wall Kick: shove off a nearby wall while airborne. */
+export const WALLKICK = { range: 1.5, push: 13, up: 7.5 };
+/** Skater Slipstream: snap to a strong forward momentum burst along your heading. */
+export const SLIPSTREAM = { boost: 27, up: 1.5 };
+/** Chronos Recall: rewind to where you were a moment ago and heal a little. */
+export const RECALL = { rewindMs: 2500, heal: 35 };
+/** Chronos Time Bubble: slow enemies caught in the radius for a few seconds. */
+export const TIMEBUBBLE = { radius: 12, mul: 0.45, durationMs: 2600 };
+/** Magnetar Pull: yank nearby enemies toward you. */
+export const PULL = { radius: 15, strength: 24, up: 4 };
+/** Bulwark Reflect: brief window that bounces incoming damage back at attackers. */
+export const REFLECT = { durationMs: 1200 };
+/** Bulwark Repulse: launch nearby enemies away from you. */
+export const REPULSE = { radius: 10, strength: 22, up: 7 };
+/** Mirage Decoy: a holographic clone that sprints forward to draw fire. */
+export const DECOY = { speed: 10, durationMs: 3500 };
 export const GRENADE = {
   fuseMs: 1400,
   speed: 24,

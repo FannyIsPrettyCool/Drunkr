@@ -25,7 +25,7 @@ import {
   DEFAULT_WEAPON,
   LOADOUT_WEAPONS,
   CLASSES,
-  CLASS_IDS,
+  BOT_CLASS_IDS,
   DEFAULT_CLASS,
   ABILITIES,
   INVIS,
@@ -35,6 +35,12 @@ import {
   SHOCKWAVE,
   BLOODLUST,
   SIPHON,
+  RECALL,
+  TIMEBUBBLE,
+  PULL,
+  REFLECT,
+  REPULSE,
+  DECOY,
   SNAPSHOT_RATE,
   TICK_RATE,
   MAPS,
@@ -43,6 +49,7 @@ import {
   stepMovement,
   TEXTURE_KEYS,
   type ProjectileState,
+  type DecoyState,
 } from "@drunkr/shared";
 
 const PORT = Number(process.env.PORT ?? 2567);
@@ -172,6 +179,14 @@ interface Actor {
   invulnUntil?: number;
   /** Recent damage dealt to this actor (for awarding assists on death). */
   damageLog: DamageHit[];
+  /** Juggernaut Shockwave launched and awaiting its landing slam. */
+  shockwavePending?: boolean;
+  /** Bulwark Reflect: timestamp (ms) until which incoming damage bounces back. */
+  reflectUntil?: number;
+  /** Chronos Time Bubble: timestamp (ms) until which this actor is slowed. */
+  slowUntil?: number;
+  /** Slow multiplier applied while `slowUntil` is active (bots use it directly). */
+  slowMul?: number;
 }
 
 /** A single chunk of damage dealt to an actor, for assist attribution. */
@@ -200,6 +215,15 @@ interface Projectile {
   explodeAt: number;
 }
 
+/** A Mirage decoy hologram that sprints forward to draw fire. */
+interface Decoy {
+  id: number;
+  pos: Vec3;
+  vel: Vec3;
+  hue: number;
+  expireAt: number;
+}
+
 interface Room {
   id: string;
   name: string;
@@ -218,6 +242,7 @@ interface Room {
   /** Server-clock timestamp (ms) when the current match ends. */
   matchEndsAt: number;
   projectiles: Projectile[];
+  decoys: Decoy[];
   /** True while in the 15-second intermission / map vote between rounds. */
   intermission: boolean;
   intermissionEndsAt: number;
@@ -246,6 +271,7 @@ interface Room {
 }
 
 let nextProjId = 1;
+let nextDecoyId = 1;
 
 const rooms = new Map<string, Room>();
 let nextId = 1;
@@ -320,6 +346,7 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     persistent,
     matchEndsAt: Date.now() + MATCH.durationMs,
     projectiles: [],
+    decoys: [],
     intermission: false,
     intermissionEndsAt: 0,
     intermissionWinner: "",
@@ -586,7 +613,51 @@ function handleShoot(
 
 // --- abilities & grenades --------------------------------------------------
 
+/** Push a target: a human gets an S_Impulse it self-applies; a bot's
+ * server-simulated velocity is nudged directly. */
+function applyKnockback(target: Actor, vx: number, vy: number, vz: number) {
+  if (target.ws) {
+    send(target.ws, { t: "impulse", vel: { x: vx, y: vy, z: vz } });
+  } else {
+    target.vel.x += vx; target.vel.y += vy; target.vel.z += vz;
+    if (vy > 0.5) target.grounded = false;
+  }
+}
+
+/** Slow a target for a while: humans get S_Slow; bots store it server-side. */
+function applySlow(target: Actor, mul: number, ms: number) {
+  target.slowUntil = Date.now() + ms;
+  target.slowMul = mul;
+  if (target.ws) send(target.ws, { t: "slow", mul, ms });
+}
+
+/** AoE "slam" where a Juggernaut lands after a Shockwave launch. */
+function shockwaveSlam(room: Room, actor: Actor, origin?: Vec3) {
+  // Trust the caster's landing spot only if it's plausibly near them (anti-cheat).
+  let o = actor.state.pos;
+  if (validVec(origin) && Math.hypot(origin!.x - actor.state.pos.x, origin!.y - actor.state.pos.y, origin!.z - actor.state.pos.z) < 4) {
+    o = origin!;
+  }
+  broadcast(room, { t: "explosion", kind: "frag", pos: { x: o.x, y: o.y, z: o.z } });
+  for (const a of room.actors.values()) {
+    if (a.id === actor.id || a.state.dead) continue;
+    const dist = Math.hypot(a.state.pos.x - o.x, a.state.pos.y - o.y, a.state.pos.z - o.z);
+    if (dist > SHOCKWAVE.radius) continue;
+    dealDamage(room, actor, a, SHOCKWAVE.damage, false);
+  }
+}
+
 function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3, dir?: Vec3) {
+  // Shockwave slam: fired by the caster landing. No class/cooldown gate — it just
+  // requires a pending shockwave from a valid earlier cast.
+  if (ability === "shockwaveSlam") {
+    if (actor.shockwavePending && !actor.state.dead) {
+      actor.shockwavePending = false;
+      shockwaveSlam(room, actor, origin);
+    }
+    return;
+  }
+
   const cls = CLASSES[actor.state.cls] ?? CLASSES[DEFAULT_CLASS];
   // You may only use your own class's server-side abilities.
   if (ability !== cls.F && ability !== cls.C) return;
@@ -614,16 +685,16 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
     // Heal to full plus temporary overheal (reflected via the next snapshot).
     actor.state.health = PLAYER.maxHealth + FORTIFY.overheal;
   } else if (ability === "shockwave") {
-    broadcast(room, { t: "explosion", kind: "frag", pos: actor.state.pos });
-    for (const a of room.actors.values()) {
-      if (a.id === actor.id || a.state.dead) continue;
-      const dist = Math.hypot(
-        a.state.pos.x - actor.state.pos.x,
-        a.state.pos.y - actor.state.pos.y,
-        a.state.pos.z - actor.state.pos.z,
-      );
-      if (dist > SHOCKWAVE.radius) continue;
-      dealDamage(room, actor, a, SHOCKWAVE.damage, false);
+    // Launch now, slam on landing. The damage is dealt by shockwaveSlam(): for
+    // humans the client reports its landing; bots are launched + landed here.
+    actor.shockwavePending = true;
+    if (!actor.ws) {
+      // Bot: apply the launch to its server-simulated velocity.
+      const fx = -Math.sin(actor.state.yaw), fz = -Math.cos(actor.state.yaw);
+      actor.vel.x += fx * SHOCKWAVE.launchForward;
+      actor.vel.z += fz * SHOCKWAVE.launchForward;
+      actor.vel.y += SHOCKWAVE.launchUp;
+      actor.grounded = false;
     }
   } else if (ability === "bloodlust") {
     // Vampire: enable lifesteal-on-damage for a few seconds (see dealDamage).
@@ -647,6 +718,56 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
       const cap = PLAYER.maxHealth + SIPHON.maxOverheal;
       if (actor.state.health < cap) actor.state.health = Math.min(cap, actor.state.health + healed);
     }
+  } else if (ability === "recall") {
+    // Chronos: heal a little (the teleport is done client-side for humans; bots
+    // rewind via their position history).
+    actor.state.health = Math.min(PLAYER.maxHealth, actor.state.health + RECALL.heal);
+    if (!actor.ws && actor.posHistory.length) {
+      const cutoff = now - RECALL.rewindMs;
+      let s = actor.posHistory[0];
+      for (const p of actor.posHistory) { if (p.t <= cutoff) s = p; else break; }
+      actor.state.pos = { x: s.x, y: s.y, z: s.z };
+      actor.vel = { x: 0, y: 0, z: 0 };
+    }
+  } else if (ability === "timebubble") {
+    broadcast(room, { t: "explosion", kind: "siphon", pos: actor.state.pos });
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const d = Math.hypot(a.state.pos.x - actor.state.pos.x, a.state.pos.z - actor.state.pos.z);
+      if (d > TIMEBUBBLE.radius) continue;
+      applySlow(a, TIMEBUBBLE.mul, TIMEBUBBLE.durationMs);
+    }
+  } else if (ability === "pull") {
+    broadcast(room, { t: "explosion", kind: "siphon", pos: actor.state.pos });
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const dx = actor.state.pos.x - a.state.pos.x, dz = actor.state.pos.z - a.state.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > PULL.radius || d < 0.5) continue;
+      applyKnockback(a, (dx / d) * PULL.strength, PULL.up, (dz / d) * PULL.strength);
+    }
+  } else if (ability === "reflect") {
+    actor.reflectUntil = now + REFLECT.durationMs;
+  } else if (ability === "repulse") {
+    broadcast(room, { t: "explosion", kind: "frag", pos: actor.state.pos });
+    for (const a of room.actors.values()) {
+      if (a.id === actor.id || a.state.dead) continue;
+      const dx = a.state.pos.x - actor.state.pos.x, dz = a.state.pos.z - actor.state.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > REPULSE.radius) continue;
+      const nd = d < 0.5 ? 1 : d;
+      applyKnockback(a, (dx / nd) * REPULSE.strength, REPULSE.up, (dz / nd) * REPULSE.strength);
+    }
+  } else if (ability === "decoy") {
+    const dd = validVec(dir) ? dir! : { x: -Math.sin(actor.state.yaw), y: 0, z: -Math.cos(actor.state.yaw) };
+    const len = Math.hypot(dd.x, dd.z) || 1;
+    room.decoys.push({
+      id: nextDecoyId++,
+      pos: { x: actor.state.pos.x, y: actor.state.pos.y, z: actor.state.pos.z },
+      vel: { x: (dd.x / len) * DECOY.speed, y: 0, z: (dd.z / len) * DECOY.speed },
+      hue: actor.state.hue,
+      expireAt: now + DECOY.durationMs,
+    });
   }
 }
 
@@ -697,6 +818,18 @@ function updateProjectiles(room: Room, now: number, dt: number) {
   }
 }
 
+function updateDecoys(room: Room, now: number, dt: number) {
+  for (let i = room.decoys.length - 1; i >= 0; i--) {
+    const d = room.decoys[i];
+    if (now >= d.expireAt) { room.decoys.splice(i, 1); continue; }
+    const nx = d.pos.x + d.vel.x * dt, nz = d.pos.z + d.vel.z * dt;
+    // Stop sprinting forward if it would run into a wall.
+    if (!insideSolid(room, { x: nx, y: d.pos.y + 0.6, z: nz })) {
+      d.pos.x = nx; d.pos.z = nz;
+    } else { d.vel.x = 0; d.vel.z = 0; }
+  }
+}
+
 function explodeGrenade(room: Room, p: Projectile) {
   broadcast(room, { t: "explosion", kind: p.kind, pos: p.pos });
   if (p.kind !== "frag") return; // flash blinds client-side
@@ -726,6 +859,14 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
   if (victim.god) return;
   // Spawn protection: invincible just after respawning (until they fire).
   if (victim.invulnUntil && Date.now() < victim.invulnUntil && attacker.id !== victim.id) return;
+  // Bulwark Reflect: bounce incoming damage back at the attacker instead.
+  if (victim.reflectUntil && Date.now() < victim.reflectUntil && attacker.id !== victim.id) {
+    const atkReflect = attacker.reflectUntil; // don't let the bounce ping-pong forever
+    attacker.reflectUntil = 0;
+    dealDamage(room, victim, attacker, dmg, false);
+    attacker.reflectUntil = atkReflect;
+    return;
+  }
   const before = victim.state.health;
   victim.state.health -= dmg;
   // Log the hit (excluding self-damage) so the killer's helpers can earn assists.
@@ -1110,6 +1251,7 @@ function respawn(room: Room, a: Actor) {
   a.vel = { x: 0, y: 0, z: 0 };
   a.grounded = false;
   a.damageLog = [];
+  a.shockwavePending = false;
   grantSpawnProtection(a);
   if (a.ai) {
     a.ai.ammo = weaponOf(a).magazine;
@@ -1127,8 +1269,9 @@ function spawnBot(room: Room) {
   const state = makeState(room, id, name);
   const roll = Math.random();
   state.weapon = roll < 0.3 ? "sniper" : roll < 0.5 ? "shotgun" : "ak";
-  // Bots get random classes; weight toward classes with server-side abilities.
-  state.cls = CLASS_IDS[Math.floor(Math.random() * CLASS_IDS.length)];
+  // Bots only roll the original classes (the new movement abilities are
+  // client-driven and would no-op on a bot).
+  state.cls = BOT_CLASS_IDS[Math.floor(Math.random() * BOT_CLASS_IDS.length)];
   const persona = botBehaviorFor(state.weapon);
   room.actors.set(id, {
     id, ws: null, state,
@@ -1351,16 +1494,20 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   }
 
   // === STEP MOVEMENT ===
+  const wasGrounded = bot.grounded;
   const moveState = {
     pos: me.pos, vel: bot.vel, grounded: bot.grounded,
     sliding: ai.sliding, slideTime: ai.slideTime, jumpsUsed: ai.jumpsUsed,
   };
+  // Chronos Time Bubble slow (applies to bots server-side).
+  const slowMul = bot.slowUntil && now < bot.slowUntil ? (bot.slowMul ?? 1) : 1;
   stepMovement(
     moveState,
     {
       wishX, wishZ, wishSpeed: MOVE.speed,
       jump, jumpEdge: false, crouch: false, crouchEdge: false,
-      speedMul: 1, maxJumps: 1, canSlide: false,
+      speedMul: slowMul, maxJumps: 1, canSlide: false,
+      airThrust: me.weapon === "katana",
     },
     room.world, dt,
   );
@@ -1368,6 +1515,12 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
   ai.sliding = moveState.sliding;
   ai.slideTime = moveState.slideTime;
   ai.jumpsUsed = moveState.jumpsUsed;
+
+  // Shockwave: a launched bot slams (AoE) the moment it touches back down.
+  if (bot.shockwavePending && bot.grounded && !wasGrounded) {
+    bot.shockwavePending = false;
+    shockwaveSlam(room, bot);
+  }
 
   // === STUCK DETECTION === force a fresh path if we've barely moved.
   if (now >= ai.stuckAt) {
@@ -2002,10 +2155,12 @@ setInterval(() => {
       tickBomb(room, now);
       for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
       if (room.projectiles.length) updateProjectiles(room, now, dt);
+      if (room.decoys.length) updateDecoys(room, now, dt);
     } else {
       if (now >= room.matchEndsAt) endMatch(room);
       for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
       if (room.projectiles.length) updateProjectiles(room, now, dt);
+      if (room.decoys.length) updateDecoys(room, now, dt);
     }
   }
 }, 1000 / TICK_RATE);
@@ -2025,11 +2180,13 @@ setInterval(() => {
       a.state.invuln = !!(a.invulnUntil && time < a.invulnUntil);
     }
     const proj: ProjectileState[] = room.projectiles.map((p) => ({ id: p.id, kind: p.kind, pos: p.pos }));
+    const decoys: DecoyState[] = room.decoys.map((d) => ({ id: d.id, pos: d.pos, hue: d.hue }));
     broadcast(room, {
       t: "snapshot",
       time,
       players: [...room.actors.values()].map((a) => a.state),
       proj: proj.length ? proj : undefined,
+      decoys: decoys.length ? decoys : undefined,
     });
   }
 }, 1000 / SNAPSHOT_RATE);
