@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { MOVE } from "@drunkr/shared";
+import { MOVE, ABILITY_LIST, ABILITIES, sanitizeAbilities } from "@drunkr/shared";
 import {
   loadLocker, saveLocker, type LockerData,
   WEAPON_SKINS, WEAPON_SKIN_LIST, SKIN_PARTS, SKINNABLE_WEAPONS, SKIN_HUES,
@@ -54,8 +54,11 @@ export class Locker {
   private root = document.getElementById("locker")!;
   private data: LockerData = loadLocker();
   private weaponId = "ak";
+  /** Which ability slot the grid is currently editing (0 = F, 1 = C). */
+  private abilSlot: 0 | 1 = 0;
   private onChange?: () => void;
   private onClose?: () => void;
+  private onAbilities?: (abilities: string[]) => void;
 
   // Weapon preview.
   private wRenderer!: THREE.WebGLRenderer;
@@ -80,10 +83,12 @@ export class Locker {
 
   /** Open the Locker. `onChange` fires when the held weapon's skin may have
    *  changed (so the caller can rebuild a live viewmodel). */
-  open(onChange?: () => void, onClose?: () => void) {
+  open(onChange?: () => void, onClose?: () => void, onAbilities?: (abilities: string[]) => void) {
     this.onChange = onChange;
     this.onClose = onClose;
+    this.onAbilities = onAbilities;
     this.data = loadLocker();
+    this.data.abilities = sanitizeAbilities(this.data.abilities);
     if (!this.built) this.build();
     this.syncControls();
     this.rebuildWeaponPreview();
@@ -110,6 +115,8 @@ export class Locker {
         `<input type="color" data-i="${i}" /></label>`).join("");
     const accessories = ACCESSORY_LIST
       .map((a) => `<button class="lk-acc" data-a="${a.id}">${a.label}</button>`).join("");
+    const abilities2 = ABILITY_LIST
+      .map((a) => `<button class="lk-abil" data-ab="${a.id}">${a.name}</button>`).join("");
 
     this.root.innerHTML = `
       <div class="lk-card">
@@ -132,6 +139,13 @@ export class Locker {
             <div id="lk-skins" class="lk-skins"></div>
             <div class="lk-label">ACCESSORY</div>
             <div class="lk-accs">${accessories}</div>
+            <div class="lk-label">ABILITIES</div>
+            <div class="lk-slots">
+              <button class="lk-slot" data-slot="0"><b>F</b> <span id="lk-slot0">—</span></button>
+              <button class="lk-slot" data-slot="1"><b>C</b> <span id="lk-slot1">—</span></button>
+            </div>
+            <div id="lk-abilities" class="lk-abilities">${abilities2}</div>
+            <div id="lk-abil-desc" class="lk-abil-desc"></div>
           </div>
         </div>
       </div>`;
@@ -195,6 +209,27 @@ export class Locker {
       });
     }
 
+    // Ability slots: click a slot to choose which one the grid edits.
+    for (const slot of this.root.querySelectorAll<HTMLElement>(".lk-slot")) {
+      slot.addEventListener("click", () => { this.abilSlot = Number(slot.dataset.slot) as 0 | 1; this.syncAbilities(); });
+    }
+    // Ability grid: click assigns to the active slot; hover shows the blurb.
+    const descEl = this.root.querySelector("#lk-abil-desc") as HTMLElement;
+    for (const btn of this.root.querySelectorAll<HTMLElement>(".lk-abil")) {
+      const id = btn.dataset.ab!;
+      btn.addEventListener("mouseenter", () => { descEl.textContent = ABILITIES[id as keyof typeof ABILITIES]?.desc ?? ""; });
+      btn.addEventListener("click", () => {
+        const other = this.abilSlot === 0 ? 1 : 0;
+        // Avoid picking the same ability twice: swap if it's already in the other slot.
+        if (this.data.abilities[other] === id) this.data.abilities[other] = this.data.abilities[this.abilSlot];
+        this.data.abilities[this.abilSlot] = id;
+        saveLocker(this.data);
+        this.syncAbilities();
+        this.onAbilities?.(this.data.abilities);
+      });
+    }
+    this.root.querySelector("#lk-abilities")!.addEventListener("mouseleave", () => { descEl.textContent = ""; });
+
     // Skin hue swatches (drive the avatar tint, persisted to drunkr.skin).
     const skinsEl = this.root.querySelector("#lk-skins")!;
     for (const hue of SKIN_HUES) {
@@ -247,6 +282,22 @@ export class Locker {
     }
     this.markActiveAccessory();
     this.markActiveSkin();
+    this.syncAbilities();
+  }
+
+  /** Reflect the chosen [F, C] abilities into the slot labels + grid highlight. */
+  private syncAbilities() {
+    const nameOf = (id: string) => ABILITIES[id as keyof typeof ABILITIES]?.name ?? "—";
+    const s0 = this.root.querySelector("#lk-slot0"); if (s0) s0.textContent = nameOf(this.data.abilities[0]);
+    const s1 = this.root.querySelector("#lk-slot1"); if (s1) s1.textContent = nameOf(this.data.abilities[1]);
+    for (const slot of this.root.querySelectorAll<HTMLElement>(".lk-slot")) {
+      slot.classList.toggle("active", Number(slot.dataset.slot) === this.abilSlot);
+    }
+    for (const btn of this.root.querySelectorAll<HTMLElement>(".lk-abil")) {
+      const id = btn.dataset.ab!;
+      btn.classList.toggle("f", this.data.abilities[0] === id);
+      btn.classList.toggle("c", this.data.abilities[1] === id);
+    }
   }
 
   private markActiveAccessory() {

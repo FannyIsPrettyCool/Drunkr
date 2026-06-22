@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import {
-  MAPS, textureForBox, TEXTURE_KEYS,
+  MAPS, textureForBox, TEXTURE_KEYS, platformPosAt,
   type GameMap, type MapBox, type JumpPad, type Ramp, type Vec3, type BoxShape,
+  type MapLight, type MapEmitter, type HazardZone, type MovingPlatform,
 } from "@drunkr/shared";
 import { getTexture, applyBoxUV } from "./textures.js";
 
@@ -14,8 +15,13 @@ type Model = {
   boxes: MapBox[];
   pads: JumpPad[];
   ramps: Ramp[];
+  lights: MapLight[];
+  emitters: MapEmitter[];
+  hazards: HazardZone[];
+  platforms: MovingPlatform[];
 };
-type SelObj = { type: "box" | "pad" | "spawn" | "ramp"; index: number };
+type SelType = "box" | "pad" | "spawn" | "ramp" | "light" | "emitter" | "hazard" | "platform";
+type SelObj = { type: SelType; index: number };
 type Sel = SelObj | null;
 type Mode = "translate" | "rotate" | "scale";
 type PrebuiltData = { boxes: MapBox[]; pads: JumpPad[]; ramps: Ramp[] };
@@ -30,11 +36,27 @@ const r4 = (n: number) => Math.round(n * 1000) / 1000;
 const d2r = (d: number) => (d * Math.PI) / 180;
 const r2d = (r: number) => Math.round((r * 180) / Math.PI);
 
+/** Decompose a velocity vector into launch power + yaw/pitch (degrees). */
+function yawPitchFromDir(v: Vec3): { yaw: number; pitch: number; speed: number } {
+  const speed = Math.hypot(v.x, v.y, v.z);
+  const pitch = speed > 1e-4 ? Math.asin(Math.max(-1, Math.min(1, v.y / speed))) : 0;
+  return { yaw: r2d(Math.atan2(v.x, v.z)), pitch: r2d(pitch), speed: r2(speed) };
+}
+/** Build a velocity vector from launch power + yaw/pitch (degrees). */
+function dirFromYawPitch(yawDeg: number, pitchDeg: number, speed: number): Vec3 {
+  const yaw = d2r(yawDeg), pitch = d2r(pitchDeg);
+  return {
+    x: r2(speed * Math.cos(pitch) * Math.sin(yaw)),
+    y: r2(speed * Math.sin(pitch)),
+    z: r2(speed * Math.cos(pitch) * Math.cos(yaw)),
+  };
+}
+
 // cyberpunk palette (mirrors shared/src/map.ts)
 const DARK = 0x12131c, SLATE = 0x1b1d2b, SLATE2 = 0x232639, SLATE3 = 0x2a2e45;
-const CYAN = 0x18e0ff, PINK = 0xff2d9b, GREEN = 0x39ff8b, AMBER = 0xffb23d;
+const CYAN = 0x18e0ff, PINK = 0xff2d9b, GREEN = 0x39ff8b, AMBER = 0xffb23d, VIOLET = 0x9b5dff;
 
-/** Visual primitive for a box (collision is always AABB — see shared BoxShape). */
+/** Visual primitive for a box (collision matches the silhouette — see shared BoxShape). */
 function shapeGeometry(shape: BoxShape | undefined, size: Vec3): THREE.BufferGeometry {
   const { x: sx, y: sy, z: sz } = size;
   if (shape === "cylinder") return new THREE.CylinderGeometry(0.5, 0.5, 1, 24).scale(sx, sy, sz);
@@ -67,10 +89,13 @@ class Editor {
 
   // transform state
   private mode: Mode = "translate";
-  private anchored = true; // scale anchors the opposite face instead of the center
+  private anchored = false; // scale grows symmetrically from the center (both ends)
   private snap = true;
   private snapSize = 1;
-  private drag: { mode: Mode; pPos: Vec3; pSize?: Vec3; others: { sel: SelObj; pos: Vec3 }[] } | null = null;
+  private drag: {
+    mode: Mode; pPos: Vec3; pSize?: Vec3; pRotY: number;
+    others: { sel: SelObj; pos: Vec3; size?: Vec3; rotY: number }[];
+  } | null = null;
 
   // history
   private undoStack: Model[] = [];
@@ -122,22 +147,24 @@ class Editor {
   }
   private pickFor(s: SelObj) { return this.picks.find((p) => p.type.type === s.type && p.type.index === s.index); }
 
-  /** The box/pad/ramp data for a selection (null for spawns). */
-  private objFor(s: SelObj): MapBox | JumpPad | Ramp | null {
-    if (s.type === "box") return this.model.boxes[s.index];
-    if (s.type === "pad") return this.model.pads[s.index];
-    if (s.type === "ramp") return this.model.ramps[s.index];
-    return null;
+  /** The data object for a selection (null for spawns, which are bare Vec3s). */
+  private objFor(s: SelObj): { pos: Vec3; size?: Vec3; color?: number; emissive?: number; texture?: string } | null {
+    const list = this.listOf(s.type);
+    return s.type === "spawn" ? null : (list[s.index] as { pos: Vec3; size?: Vec3; color?: number });
   }
   /** The position vector for a selection (spawns are positioned directly). */
   private posRef(s: SelObj): Vec3 {
-    return s.type === "spawn" ? this.model.spawns[s.index] : (this.objFor(s) as MapBox).pos;
+    return s.type === "spawn" ? this.model.spawns[s.index] : this.objFor(s)!.pos;
   }
   /** Y offset between a selection's mesh and its stored position. */
   private meshYOffset(s: SelObj): number {
     if (s.type === "spawn") return 1.2;
     if (s.type === "ramp") return this.model.ramps[s.index].size.y / 2 - 0.2;
     return 0;
+  }
+  /** Stored Y-rotation of a selection (only boxes carry rotation). */
+  private rotYOf(s: SelObj): number {
+    return s.type === "box" ? (this.model.boxes[s.index].rot?.y ?? 0) : 0;
   }
 
   // ---- scene build --------------------------------------------------------
@@ -173,19 +200,70 @@ class Editor {
     });
 
     this.model.pads.forEach((p, index) => {
+      // Flat glowing square on the ground (no tilt — orientation lives in launch).
       const m = new THREE.Mesh(
         new THREE.BoxGeometry(p.size.x, p.size.y, p.size.z),
         new THREE.MeshStandardMaterial({ color: p.color, emissive: p.color, emissiveIntensity: 0.9 }),
       );
       m.position.set(p.pos.x, p.pos.y, p.pos.z);
-      if (p.rot) m.rotation.set(p.rot.x, p.rot.y, p.rot.z);
       this.group.add(m);
-      const arrow = new THREE.ArrowHelper(
-        new THREE.Vector3(p.launch.x, p.launch.y, p.launch.z).normalize(),
-        new THREE.Vector3(p.pos.x, p.pos.y + 0.4, p.pos.z), 4, p.color,
-      );
+      const lv = new THREE.Vector3(p.launch.x, p.launch.y, p.launch.z);
+      const dir = lv.length() > 1e-3 ? lv.clone().normalize() : new THREE.Vector3(0, 1, 0);
+      const arrow = new THREE.ArrowHelper(dir, new THREE.Vector3(p.pos.x, p.pos.y + 0.4, p.pos.z), 4, p.color);
       this.group.add(arrow);
       this.picks.push({ obj: m, type: { type: "pad", index } });
+    });
+
+    this.model.lights.forEach((l, index) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.4, 12, 10),
+        new THREE.MeshStandardMaterial({ color: l.color, emissive: l.color, emissiveIntensity: 1 }),
+      );
+      m.position.set(l.pos.x, l.pos.y, l.pos.z);
+      this.group.add(m);
+      const light = new THREE.PointLight(l.color, l.intensity, l.range, 2);
+      m.add(light);
+      this.picks.push({ obj: m, type: { type: "light", index } });
+    });
+
+    this.model.emitters.forEach((e, index) => {
+      const m = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.4),
+        new THREE.MeshStandardMaterial({ color: e.color, emissive: e.color, emissiveIntensity: 0.9, wireframe: true }),
+      );
+      m.position.set(e.pos.x, e.pos.y, e.pos.z);
+      this.group.add(m);
+      const ev = new THREE.Vector3(e.dir.x, e.dir.y, e.dir.z);
+      if (ev.length() > 1e-3) this.group.add(new THREE.ArrowHelper(ev.clone().normalize(), m.position.clone(), 2.5, e.color));
+      this.picks.push({ obj: m, type: { type: "emitter", index } });
+    });
+
+    this.model.hazards.forEach((h, index) => {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(h.size.x, h.size.y, h.size.z),
+        new THREE.MeshStandardMaterial({ color: h.color, emissive: h.color, emissiveIntensity: 0.6, transparent: true, opacity: 0.45 }),
+      );
+      m.position.set(h.pos.x, h.pos.y, h.pos.z);
+      this.group.add(m);
+      this.picks.push({ obj: m, type: { type: "hazard", index } });
+    });
+
+    this.model.platforms.forEach((p, index) => {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(p.size.x, p.size.y, p.size.z),
+        new THREE.MeshStandardMaterial({ color: p.color, emissive: p.emissive ?? p.color, emissiveIntensity: 0.4, roughness: 0.7, metalness: 0.15 }),
+      );
+      m.position.set(p.pos.x, p.pos.y, p.pos.z);
+      this.group.add(m);
+      // Dashed line showing the travel path to the far endpoint.
+      const far = new THREE.Vector3(p.pos.x + p.travel.x, p.pos.y + p.travel.y, p.pos.z + p.travel.z);
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([m.position.clone(), far]),
+        new THREE.LineDashedMaterial({ color: p.emissive ?? 0x18e0ff, dashSize: 0.6, gapSize: 0.4 }),
+      );
+      line.computeLineDistances();
+      this.group.add(line);
+      this.picks.push({ obj: m, type: { type: "platform", index } });
     });
 
     this.model.ramps.forEach((r, index) => {
@@ -289,8 +367,13 @@ class Editor {
     this.drag = {
       mode: this.mode,
       pPos: clone(this.posRef(prim)),
-      pSize: o ? clone(o.size) : undefined,
-      others: this.selection.filter((s) => s !== prim).map((s) => ({ sel: s, pos: clone(this.posRef(s)) })),
+      pSize: o && o.size ? clone(o.size) : undefined,
+      pRotY: this.rotYOf(prim),
+      others: this.selection.filter((s) => s !== prim).map((s) => ({
+        sel: s, pos: clone(this.posRef(s)),
+        size: this.objFor(s)?.size ? clone(this.objFor(s)!.size!) : undefined,
+        rotY: this.rotYOf(s),
+      })),
     };
   }
 
@@ -309,30 +392,91 @@ class Editor {
       r.pos.x = r2(obj.position.x); r.pos.z = r2(obj.position.z);
       r.pos.y = r2(obj.position.y - r.size.y / 2 + 0.2);
     } else {
-      const o = prim.type === "box" ? this.model.boxes[prim.index] : this.model.pads[prim.index];
+      const o = this.objFor(prim)!;
       o.pos.x = r2(obj.position.x); o.pos.y = r2(obj.position.y); o.pos.z = r2(obj.position.z);
       // Geometry was built at the drag-start size; gizmo scale multiplies it.
-      // (Non-box shapes have no geo.parameters, so derive from the captured size.)
-      const geo = obj.geometry as THREE.BoxGeometry;
-      const base = this.drag?.pSize ?? { x: geo.parameters?.width ?? o.size.x, y: geo.parameters?.height ?? o.size.y, z: geo.parameters?.depth ?? o.size.z };
-      o.size.x = Math.max(0.1, r2(base.x * obj.scale.x));
-      o.size.y = Math.max(0.1, r2(base.y * obj.scale.y));
-      o.size.z = Math.max(0.1, r2(base.z * obj.scale.z));
-      const e = obj.rotation;
-      o.rot = e.x || e.y || e.z ? { x: r4(e.x), y: r4(e.y), z: r4(e.z) } : undefined;
-    }
-    // Move every other selected object by the same translation delta.
-    if (this.drag && this.mode === "translate" && this.drag.others.length) {
-      const np = this.posRef(prim);
-      const dx = np.x - this.drag.pPos.x, dy = np.y - this.drag.pPos.y, dz = np.z - this.drag.pPos.z;
-      for (const o of this.drag.others) {
-        const ref = this.posRef(o.sel);
-        ref.x = r2(o.pos.x + dx); ref.y = r2(o.pos.y + dy); ref.z = r2(o.pos.z + dz);
-        const pick = this.pickFor(o.sel);
-        if (pick) pick.obj.position.set(ref.x, ref.y + this.meshYOffset(o.sel), ref.z);
+      if (o.size) {
+        const geo = obj.geometry as THREE.BoxGeometry;
+        const base = this.drag?.pSize ?? { x: geo.parameters?.width ?? o.size.x, y: geo.parameters?.height ?? o.size.y, z: geo.parameters?.depth ?? o.size.z };
+        o.size.x = Math.max(0.1, r2(base.x * obj.scale.x));
+        o.size.y = Math.max(0.1, r2(base.y * obj.scale.y));
+        o.size.z = Math.max(0.1, r2(base.z * obj.scale.z));
+      }
+      // Only boxes store rotation. Pads convert rotation into a launch direction
+      // (handled on drag-end so the flat slab itself never tilts).
+      if (prim.type === "box") {
+        const b = this.model.boxes[prim.index];
+        const e = obj.rotation;
+        b.rot = e.x || e.y || e.z ? { x: r4(e.x), y: r4(e.y), z: r4(e.z) } : undefined;
       }
     }
+    this.applyGroupTransform();
     this.showProps();
+  }
+
+  /** Apply the primary's drag delta to the rest of the selection (translate by
+   *  the same offset, rotate/scale around the primary's pivot). */
+  private applyGroupTransform() {
+    const d = this.drag, prim = this.primary();
+    if (!d || !prim || !d.others.length) return;
+    const obj = this.gizmo.object as THREE.Mesh | undefined;
+    if (!obj) return;
+    const piv = d.pPos;
+    const sync = (s: SelObj, ref: Vec3) => {
+      const pick = this.pickFor(s);
+      if (pick) pick.obj.position.set(ref.x, ref.y + this.meshYOffset(s), ref.z);
+    };
+    if (this.mode === "translate") {
+      const np = this.posRef(prim);
+      const dx = np.x - piv.x, dy = np.y - piv.y, dz = np.z - piv.z;
+      for (const o of d.others) {
+        const ref = this.posRef(o.sel);
+        ref.x = r2(o.pos.x + dx); ref.y = r2(o.pos.y + dy); ref.z = r2(o.pos.z + dz);
+        sync(o.sel, ref);
+      }
+    } else if (this.mode === "rotate") {
+      const dyaw = obj.rotation.y - d.pRotY;
+      const c = Math.cos(dyaw), s = Math.sin(dyaw);
+      for (const o of d.others) {
+        const ox = o.pos.x - piv.x, oz = o.pos.z - piv.z;
+        // Match THREE.makeRotationY: x' = c·x + s·z, z' = −s·x + c·z.
+        const ref = this.posRef(o.sel);
+        ref.x = r2(piv.x + (c * ox + s * oz)); ref.y = o.pos.y; ref.z = r2(piv.z + (-s * ox + c * oz));
+        if (o.sel.type === "box") {
+          const b = this.model.boxes[o.sel.index];
+          const ry = o.rotY + dyaw;
+          b.rot = { x: b.rot?.x ?? 0, y: r4(ry), z: b.rot?.z ?? 0 };
+          const pick = this.pickFor(o.sel); if (pick) pick.obj.rotation.y = ry;
+        }
+        sync(o.sel, ref);
+      }
+    } else { // scale
+      const fx = obj.scale.x, fy = obj.scale.y, fz = obj.scale.z;
+      for (const o of d.others) {
+        const ref = this.posRef(o.sel);
+        ref.x = r2(piv.x + (o.pos.x - piv.x) * fx);
+        ref.y = r2(piv.y + (o.pos.y - piv.y) * fy);
+        ref.z = r2(piv.z + (o.pos.z - piv.z) * fz);
+        const od = this.objFor(o.sel);
+        if (od?.size && o.size) {
+          od.size.x = Math.max(0.1, r2(o.size.x * fx));
+          od.size.y = Math.max(0.1, r2(o.size.y * fy));
+          od.size.z = Math.max(0.1, r2(o.size.z * fz));
+          const pick = this.pickFor(o.sel); if (pick) pick.obj.scale.set(fx, fy, fz);
+        }
+        sync(o.sel, ref);
+      }
+    }
+  }
+
+  /** Rotate a pad's launch vector about Y by `yaw` (the gizmo's turn). The slab
+   *  stays flat — only the launch direction (and its arrow) changes. */
+  private rotatePadLaunch(i: number, yaw: number) {
+    const p = this.model.pads[i];
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const lx = p.launch.x, lz = p.launch.z;
+    p.launch.x = r2(c * lx + s * lz);
+    p.launch.z = r2(-s * lx + c * lz);
   }
 
   /** On scale end, optionally anchor the opposite face so one side stays put. */
@@ -340,11 +484,19 @@ class Editor {
     const prim = this.primary();
     if (this.drag && this.mode === "scale" && this.anchored && prim && this.drag.pSize &&
         (prim.type === "box" || prim.type === "pad")) {
-      const o = prim.type === "box" ? this.model.boxes[prim.index] : this.model.pads[prim.index];
-      const ss = this.drag.pSize, sp = this.drag.pPos;
-      o.pos.x = r2(sp.x + (o.size.x - ss.x) / 2);
-      o.pos.y = r2(sp.y + (o.size.y - ss.y) / 2);
-      o.pos.z = r2(sp.z + (o.size.z - ss.z) / 2);
+      const o = this.objFor(prim);
+      if (o?.size) {
+        const ss = this.drag.pSize, sp = this.drag.pPos;
+        o.pos.x = r2(sp.x + (o.size.x - ss.x) / 2);
+        o.pos.y = r2(sp.y + (o.size.y - ss.y) / 2);
+        o.pos.z = r2(sp.z + (o.size.z - ss.z) / 2);
+      }
+    }
+    // Rotating a pad only turns where it launches you — bake it into the launch
+    // vector and rebuild flat (the gizmo's rotation is discarded).
+    if (this.drag && this.mode === "rotate" && prim?.type === "pad") {
+      const obj = this.gizmo.object as THREE.Mesh | undefined;
+      if (obj && Math.abs(obj.rotation.y) > 1e-4) this.rotatePadLaunch(prim.index, obj.rotation.y);
     }
     this.drag = null;
     this.build();
@@ -365,38 +517,56 @@ class Editor {
       hint.textContent = `+${this.selection.length - 1} more selected · edits apply to this one`;
     } else hint.classList.add("hidden");
 
-    const solid = type === "box" || type === "ramp"; // has color, emissive, texture
-    const rotatable = type === "box" || type === "pad";
-    $("props").querySelectorAll<HTMLElement>(".size-fields").forEach((el) => el.classList.toggle("hidden", type === "spawn"));
-    $("props").querySelector(".color-fields")!.classList.toggle("hidden", type === "spawn");
-    $("props").querySelector(".launch-fields")!.classList.toggle("hidden", type !== "pad");
-    $("props").querySelector(".texture-fields")!.classList.toggle("hidden", !solid);
-    $("props").querySelector(".dir-fields")!.classList.toggle("hidden", type !== "ramp");
-    $("props").querySelector(".shape-fields")!.classList.toggle("hidden", type !== "box");
-    $("props").querySelectorAll<HTMLElement>(".rot-fields").forEach((el) => el.classList.toggle("hidden", !rotatable));
+    const sized = type !== "spawn" && type !== "light" && type !== "emitter";
+    const colored = type !== "spawn";
+    const solid = type === "box" || type === "ramp" || type === "platform"; // color + emissive + texture
+    const toggle = (sel: string, on: boolean) =>
+      $("props").querySelectorAll<HTMLElement>(sel).forEach((el) => el.classList.toggle("hidden", !on));
+    toggle(".size-fields", sized);
+    toggle(".color-fields", colored);
+    toggle(".texture-fields", solid);
+    toggle(".rot-fields", type === "box");
+    toggle(".shape-fields", type === "box");
+    toggle(".dir-fields", type === "ramp");
+    toggle(".pad-fields", type === "pad");
+    toggle(".light-fields", type === "light");
+    toggle(".emitter-fields", type === "emitter");
+    toggle(".hazard-fields", type === "hazard");
+    toggle(".platform-fields", type === "platform");
 
     const pos = this.posRef(prim);
     setNum("p-px", pos.x); setNum("p-py", pos.y); setNum("p-pz", pos.z);
 
-    if (type !== "spawn") {
+    if (sized) {
       const o = this.objFor(prim)!;
-      setNum("p-sx", o.size.x); setNum("p-sy", o.size.y); setNum("p-sz", o.size.z);
-      ($("p-color") as HTMLInputElement).value = hex(o.color);
+      setNum("p-sx", o.size!.x); setNum("p-sy", o.size!.y); setNum("p-sz", o.size!.z);
     }
-    if (rotatable) {
-      const rot = (this.objFor(prim) as MapBox).rot;
+    if (colored) ($("p-color") as HTMLInputElement).value = hex((this.objFor(prim) as { color: number }).color);
+    if (type === "box") {
+      const rot = this.model.boxes[index].rot;
       setNum("p-rx", r2d(rot?.x ?? 0)); setNum("p-ry", r2d(rot?.y ?? 0)); setNum("p-rz", r2d(rot?.z ?? 0));
     }
     if (solid) {
-      const o = this.objFor(prim) as MapBox | Ramp;
+      const o = this.objFor(prim) as { emissive?: number; texture?: string; color: number };
       ($("p-emi-on") as HTMLInputElement).checked = o.emissive !== undefined;
       ($("p-emi") as HTMLInputElement).value = hex(o.emissive ?? o.color);
       ($("p-texture") as HTMLSelectElement).value = o.texture ?? "";
     }
     if (type === "box") ($("p-shape") as HTMLSelectElement).value = this.model.boxes[index].shape ?? "box";
     if (type === "pad") {
-      const l = this.model.pads[index].launch;
-      setNum("p-lx", l.x); setNum("p-ly", l.y); setNum("p-lz", l.z);
+      const { yaw, pitch, speed } = yawPitchFromDir(this.model.pads[index].launch);
+      setNum("p-str", speed); setNum("p-yaw", yaw); setNum("p-pitch", pitch);
+    }
+    if (type === "light") { const l = this.model.lights[index]; setNum("p-lint", l.intensity); setNum("p-lrange", l.range); }
+    if (type === "emitter") {
+      const e = this.model.emitters[index];
+      const { yaw, pitch } = yawPitchFromDir(e.dir);
+      setNum("p-erate", e.rate); setNum("p-eyaw", yaw); setNum("p-epitch", pitch);
+    }
+    if (type === "hazard") setNum("p-hdps", this.model.hazards[index].dps);
+    if (type === "platform") {
+      const p = this.model.platforms[index];
+      setNum("p-tx", p.travel.x); setNum("p-ty", p.travel.y); setNum("p-tz", p.travel.z); setNum("p-period", p.period);
     }
     if (type === "ramp") ($("p-dir") as HTMLSelectElement).value = String(this.model.ramps[index].dir);
   }
@@ -405,24 +575,25 @@ class Editor {
     const prim = this.primary();
     if (!prim) return;
     const { type, index } = prim;
-    const solid = type === "box" || type === "ramp";
-    const rotatable = type === "box" || type === "pad";
+    const sized = type !== "spawn" && type !== "light" && type !== "emitter";
+    const colored = type !== "spawn";
+    const solid = type === "box" || type === "ramp" || type === "platform";
     const pos = this.posRef(prim);
     pos.x = getNum("p-px"); pos.y = getNum("p-py"); pos.z = getNum("p-pz");
-    if (type !== "spawn") {
+    if (sized) {
       const o = this.objFor(prim)!;
-      o.size.x = Math.max(0.1, getNum("p-sx"));
-      o.size.y = Math.max(0.1, getNum("p-sy"));
-      o.size.z = Math.max(0.1, getNum("p-sz"));
-      o.color = toNum(($("p-color") as HTMLInputElement).value);
+      o.size!.x = Math.max(0.1, getNum("p-sx"));
+      o.size!.y = Math.max(0.1, getNum("p-sy"));
+      o.size!.z = Math.max(0.1, getNum("p-sz"));
     }
-    if (rotatable) {
-      const o = this.objFor(prim) as MapBox | JumpPad;
+    if (colored) (this.objFor(prim) as { color: number }).color = toNum(($("p-color") as HTMLInputElement).value);
+    if (type === "box") {
+      const b = this.model.boxes[index];
       const rx = d2r(getNum("p-rx")), ry = d2r(getNum("p-ry")), rz = d2r(getNum("p-rz"));
-      o.rot = rx || ry || rz ? { x: r4(rx), y: r4(ry), z: r4(rz) } : undefined;
+      b.rot = rx || ry || rz ? { x: r4(rx), y: r4(ry), z: r4(rz) } : undefined;
     }
     if (solid) {
-      const o = this.objFor(prim) as MapBox | Ramp;
+      const o = this.objFor(prim) as { emissive?: number; texture?: string };
       o.emissive = ($("p-emi-on") as HTMLInputElement).checked ? toNum(($("p-emi") as HTMLInputElement).value) : undefined;
       o.texture = ($("p-texture") as HTMLSelectElement).value || undefined;
     }
@@ -431,8 +602,23 @@ class Editor {
       this.model.boxes[index].shape = sh === "box" ? undefined : sh;
     }
     if (type === "pad") {
-      const l = this.model.pads[index].launch;
-      l.x = getNum("p-lx"); l.y = getNum("p-ly"); l.z = getNum("p-lz");
+      this.model.pads[index].launch = dirFromYawPitch(getNum("p-yaw"), getNum("p-pitch"), Math.max(0, getNum("p-str")));
+    }
+    if (type === "light") {
+      const l = this.model.lights[index];
+      l.intensity = Math.max(0, getNum("p-lint")); l.range = Math.max(1, getNum("p-lrange"));
+    }
+    if (type === "emitter") {
+      const e = this.model.emitters[index];
+      const speed = Math.max(0.5, Math.hypot(e.dir.x, e.dir.y, e.dir.z));
+      e.rate = Math.max(0, getNum("p-erate"));
+      e.dir = dirFromYawPitch(getNum("p-eyaw"), getNum("p-epitch"), speed);
+    }
+    if (type === "hazard") this.model.hazards[index].dps = Math.max(0, getNum("p-hdps"));
+    if (type === "platform") {
+      const p = this.model.platforms[index];
+      p.travel.x = getNum("p-tx"); p.travel.y = getNum("p-ty"); p.travel.z = getNum("p-tz");
+      p.period = Math.max(0.2, getNum("p-period"));
     }
     if (type === "ramp") this.model.ramps[index].dir = Number(($("p-dir") as HTMLSelectElement).value) || 0;
     this.build();
@@ -451,10 +637,28 @@ class Editor {
     this.select({ type: "pad", index: this.model.pads.length - 1 });
     this.build();
   }
-  private addRamp() {
+  private addLight() {
     this.pushHistory();
-    this.model.ramps.push({ pos: v3(0, 0, 0), size: v3(6, 5, 12), dir: 2, color: SLATE2, emissive: CYAN });
-    this.select({ type: "ramp", index: this.model.ramps.length - 1 });
+    this.model.lights.push({ pos: v3(0, 6, 0), color: CYAN, intensity: 2, range: 24 });
+    this.select({ type: "light", index: this.model.lights.length - 1 });
+    this.build();
+  }
+  private addEmitter() {
+    this.pushHistory();
+    this.model.emitters.push({ pos: v3(0, 1, 0), color: PINK, rate: 24, dir: v3(0, 3, 0) });
+    this.select({ type: "emitter", index: this.model.emitters.length - 1 });
+    this.build();
+  }
+  private addHazard() {
+    this.pushHistory();
+    this.model.hazards.push({ pos: v3(0, 1, 0), size: v3(6, 2, 6), color: 0xff3344, dps: 25 });
+    this.select({ type: "hazard", index: this.model.hazards.length - 1 });
+    this.build();
+  }
+  private addPlatform() {
+    this.pushHistory();
+    this.model.platforms.push({ pos: v3(0, 2, 0), size: v3(5, 0.6, 5), color: SLATE3, travel: v3(0, 8, 0), period: 6, emissive: CYAN });
+    this.select({ type: "platform", index: this.model.platforms.length - 1 });
     this.build();
   }
   private addSpawn() {
@@ -464,9 +668,17 @@ class Editor {
     this.build();
   }
 
-  private listOf(type: SelObj["type"]): unknown[] {
-    return type === "box" ? this.model.boxes : type === "pad" ? this.model.pads
-      : type === "ramp" ? this.model.ramps : this.model.spawns;
+  private listOf(type: SelType): unknown[] {
+    switch (type) {
+      case "box": return this.model.boxes;
+      case "pad": return this.model.pads;
+      case "ramp": return this.model.ramps;
+      case "light": return this.model.lights;
+      case "emitter": return this.model.emitters;
+      case "hazard": return this.model.hazards;
+      case "platform": return this.model.platforms;
+      default: return this.model.spawns;
+    }
   }
 
   private duplicate() {
@@ -569,6 +781,8 @@ class Editor {
     this.model = {
       name: map.name, bounds: map.bounds,
       spawns: clone(map.spawns), boxes: clone(map.boxes), pads: clone(map.pads ?? []), ramps: clone(map.ramps ?? []),
+      lights: clone(map.lights ?? []), emitters: clone(map.emitters ?? []),
+      hazards: clone(map.hazards ?? []), platforms: clone(map.platforms ?? []),
     };
     this.selection = [];
     this.undoStack = []; this.redoStack = [];
@@ -582,6 +796,10 @@ class Editor {
       spawns: this.model.spawns, boxes: this.model.boxes,
       ...(this.model.pads.length ? { pads: this.model.pads } : {}),
       ...(this.model.ramps.length ? { ramps: this.model.ramps } : {}),
+      ...(this.model.lights.length ? { lights: this.model.lights } : {}),
+      ...(this.model.emitters.length ? { emitters: this.model.emitters } : {}),
+      ...(this.model.hazards.length ? { hazards: this.model.hazards } : {}),
+      ...(this.model.platforms.length ? { platforms: this.model.platforms } : {}),
     };
     const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -604,8 +822,17 @@ class Editor {
     ($("m-bounds") as HTMLInputElement).value = String(this.model.bounds);
   }
   private refreshCounts() {
-    $("counts").textContent =
-      `${this.model.boxes.length} boxes · ${this.model.ramps.length} ramps · ${this.model.pads.length} pads · ${this.model.spawns.length} spawns`;
+    const m = this.model;
+    const parts = [
+      `${m.boxes.length} boxes`, `${m.pads.length} pads`,
+      ...(m.ramps.length ? [`${m.ramps.length} ramps`] : []),
+      ...(m.lights.length ? [`${m.lights.length} lights`] : []),
+      ...(m.emitters.length ? [`${m.emitters.length} emitters`] : []),
+      ...(m.hazards.length ? [`${m.hazards.length} hazards`] : []),
+      ...(m.platforms.length ? [`${m.platforms.length} platforms`] : []),
+      `${m.spawns.length} spawns`,
+    ];
+    $("counts").textContent = parts.join(" · ");
   }
   private refreshList() {
     const el = $("objlist");
@@ -620,6 +847,10 @@ class Editor {
     this.model.boxes.forEach((b, i) => add(`${b.shape ?? "box"} ${i}`, { type: "box", index: i }));
     this.model.ramps.forEach((_, i) => add(`ramp ${i}`, { type: "ramp", index: i }));
     this.model.pads.forEach((_, i) => add(`pad ${i}`, { type: "pad", index: i }));
+    this.model.lights.forEach((_, i) => add(`light ${i}`, { type: "light", index: i }));
+    this.model.emitters.forEach((_, i) => add(`emitter ${i}`, { type: "emitter", index: i }));
+    this.model.hazards.forEach((_, i) => add(`hazard ${i}`, { type: "hazard", index: i }));
+    this.model.platforms.forEach((_, i) => add(`platform ${i}`, { type: "platform", index: i }));
     this.model.spawns.forEach((_, i) => add(`spawn ${i}`, { type: "spawn", index: i }));
   }
 
@@ -639,7 +870,10 @@ class Editor {
       sel.value = "";
     });
     $("add-pad").onclick = () => this.addPad();
-    $("add-ramp").onclick = () => this.addRamp();
+    $("add-light").onclick = () => this.addLight();
+    $("add-emitter").onclick = () => this.addEmitter();
+    $("add-hazard").onclick = () => this.addHazard();
+    $("add-platform").onclick = () => this.addPlatform();
     $("add-spawn").onclick = () => this.addSpawn();
     document.querySelectorAll<HTMLElement>(".mode").forEach((b) =>
       (b.onclick = () => this.setMode(b.dataset.mode as Mode)));
@@ -670,11 +904,13 @@ class Editor {
     });
 
     // Property inputs: live-apply on edit; snapshot once when a field gains focus.
-    const propIds = ["p-px", "p-py", "p-pz", "p-sx", "p-sy", "p-sz", "p-rx", "p-ry", "p-rz", "p-lx", "p-ly", "p-lz", "p-color", "p-emi", "p-emi-on", "p-shape", "p-dir"];
-    for (const id of ["p-px", "p-py", "p-pz", "p-sx", "p-sy", "p-sz", "p-rx", "p-ry", "p-rz", "p-lx", "p-ly", "p-lz", "p-color", "p-emi", "p-emi-on"]) {
-      $(id).addEventListener("input", () => this.applyProps());
-    }
-    for (const id of propIds) $(id).addEventListener("focus", () => this.pushHistory());
+    const numIds = [
+      "p-px", "p-py", "p-pz", "p-sx", "p-sy", "p-sz", "p-rx", "p-ry", "p-rz",
+      "p-str", "p-yaw", "p-pitch", "p-lint", "p-lrange", "p-erate", "p-eyaw", "p-epitch",
+      "p-hdps", "p-tx", "p-ty", "p-tz", "p-period", "p-color", "p-emi", "p-emi-on",
+    ];
+    for (const id of numIds) $(id).addEventListener("input", () => this.applyProps());
+    for (const id of [...numIds, "p-shape", "p-dir"]) $(id).addEventListener("focus", () => this.pushHistory());
     // Texture dropdown: "auto", "none", then each texture key.
     const texSel = $("p-texture") as HTMLSelectElement;
     for (const [val, label] of [["", "auto"], ["none", "none (color)"], ...TEXTURE_KEYS.map((k) => [k, k] as const)]) {
@@ -870,10 +1106,12 @@ const PREBUILTS: { name: string; make: () => PrebuiltData }[] = [
   { name: "Stairs", make: () => ({ boxes: [0, 1, 2, 3, 4].map((i) =>
     bx(v3(0, (i + 1) / 2, i * 2), v3(5, i + 1, 2), SLATE2, CYAN)), pads: [], ramps: [] }) },
   { name: "Ramp + Deck", make: () => ({
-    boxes: [bx(v3(0, 2, 5.5), v3(6, 4, 3), SLATE2, CYAN)],
-    ramps: [{ pos: v3(0, 0, -2), size: v3(6, 4, 8), dir: 2, color: SLATE2, emissive: CYAN }],
-    pads: [],
+    boxes: [
+      bx(v3(0, 2, 0), v3(8, 4, 6), SLATE2, CYAN, "wedge"),
+      bx(v3(-5.5, 2, 0), v3(3, 4, 6), SLATE2, CYAN),
+    ], pads: [], ramps: [],
   }) },
+  { name: "Wedge", make: () => ({ boxes: [bx(v3(0, 2, 0), v3(7, 4, 7), SLATE3, CYAN, "wedge")], pads: [], ramps: [] }) },
   { name: "Doorway", make: () => ({ boxes: [
     bx(v3(-3, 3, 0), v3(1.5, 6, 1.5), SLATE2, PINK),
     bx(v3(3, 3, 0), v3(1.5, 6, 1.5), SLATE2, PINK),
@@ -894,11 +1132,45 @@ const PREBUILTS: { name: string; make: () => PrebuiltData }[] = [
     pads: [{ pos: v3(0, 0.1, 6), size: v3(5, 0.2, 5), launch: v3(0, 22, 0), color: CYAN }],
     ramps: [],
   }) },
+  { name: "Pillar Ring", make: () => ({
+    boxes: [0, 1, 2, 3, 4, 5].map((i) => {
+      const a = (i / 6) * Math.PI * 2;
+      return bx(v3(r2(Math.cos(a) * 6), 4, r2(Math.sin(a) * 6)), v3(1.6, 8, 1.6), SLATE3, CYAN, "cylinder");
+    }), pads: [], ramps: [],
+  }) },
+  { name: "Half-Pipe", make: () => ({
+    boxes: [
+      bx(v3(-5, 2, 0), v3(6, 4, 8), SLATE2, PINK, "wedge"),
+      { ...bx(v3(5, 2, 0), v3(6, 4, 8), SLATE2, PINK, "wedge"), rot: v3(0, Math.PI, 0) },
+    ], pads: [], ramps: [],
+  }) },
+  { name: "Orb Tower", make: () => ({
+    boxes: [
+      bx(v3(0, 4, 0), v3(2.2, 8, 2.2), SLATE3, VIOLET, "cylinder"),
+      bx(v3(0, 9, 0), v3(3.2, 3.2, 3.2), SLATE3, VIOLET, "sphere"),
+    ], pads: [], ramps: [],
+  }) },
+  { name: "Catwalk", make: () => ({
+    boxes: [
+      bx(v3(0, 5, 0), v3(14, 0.6, 2.4), SLATE2, GREEN),
+      bx(v3(-6.5, 2.5, 0), v3(1, 5, 2.4), SLATE3, GREEN),
+      bx(v3(6.5, 2.5, 0), v3(1, 5, 2.4), SLATE3, GREEN),
+    ], pads: [], ramps: [],
+  }) },
+  { name: "Launch + Pad", make: () => ({
+    boxes: [bx(v3(0, 4, -10), v3(8, 8, 4), DARK, AMBER)],
+    pads: [{ pos: v3(0, 0.1, 0), size: v3(5, 0.2, 5), launch: v3(0, 16, -12), color: AMBER }],
+    ramps: [],
+  }) },
 ];
 
 // ---- helpers --------------------------------------------------------------
 function blank(): Model {
-  return { name: "Untitled", bounds: 40, spawns: [v3(0, 0, 0)], boxes: [{ pos: v3(0, -0.5, 0), size: v3(80, 1, 80), color: DARK }], pads: [], ramps: [] };
+  return {
+    name: "Untitled", bounds: 40, spawns: [v3(0, 0, 0)],
+    boxes: [{ pos: v3(0, -0.5, 0), size: v3(80, 1, 80), color: DARK }],
+    pads: [], ramps: [], lights: [], emitters: [], hazards: [], platforms: [],
+  };
 }
 function setNum(id: string, n: number) { ($(id) as HTMLInputElement).value = String(Math.round(n * 100) / 100); }
 function getNum(id: string) { return Number(($(id) as HTMLInputElement).value) || 0; }

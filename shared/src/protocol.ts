@@ -22,8 +22,8 @@ export interface PlayerState {
   admin?: boolean;
   /** Currently-held weapon id (see WEAPONS). */
   weapon: string;
-  /** Class id (see CLASSES). */
-  cls: string;
+  /** Chosen abilities [F, C] (see ABILITIES) — replaces the old class system. */
+  abilities: string[];
   /** Invisible (Illusionist cloak) — remote clients hide the avatar. */
   invis: boolean;
   /** Spawn-protected (invincible just after respawning) — shows a shield. */
@@ -96,8 +96,8 @@ export interface PlayerPrefs {
   skin?: number;
   /** Starting weapon id. */
   weapon?: string;
-  /** Class id. */
-  cls?: string;
+  /** Chosen abilities [F, C]. */
+  abilities?: string[];
   /** Cosmetic weapon-skin id. */
   wepSkin?: string;
   /** Custom per-weapon palettes from the Locker: weaponId → [body,emissive,accent,metal,steel,glow]. */
@@ -167,10 +167,10 @@ export interface C_SwitchWeapon {
   weapon: string;
 }
 
-/** Request a class change. Applied by the server on the next respawn. */
-export interface C_SwitchClass {
-  t: "class";
-  cls: string;
+/** Choose the two abilities [F, C]. Applied by the server on the next respawn. */
+export interface C_SetAbilities {
+  t: "abilities";
+  abilities: string[];
 }
 
 /** Latency reply: echoes the server's ping timestamp so it can measure RTT. */
@@ -230,7 +230,7 @@ export type ClientMessage =
   | C_Respawn
   | C_Fell
   | C_SwitchWeapon
-  | C_SwitchClass
+  | C_SetAbilities
   | C_Pong
   | C_Ability
   | C_VoteMap

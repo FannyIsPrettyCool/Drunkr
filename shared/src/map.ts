@@ -51,6 +51,52 @@ export interface Ramp {
   texture?: string;
 }
 
+/** A coloured point light placed in the arena (purely visual). */
+export interface MapLight {
+  pos: Vec3;
+  color: number;
+  /** Light intensity (0..~5). */
+  intensity: number;
+  /** Falloff distance. */
+  range: number;
+}
+
+/** A decorative particle emitter (client-side ambiance, no gameplay effect). */
+export interface MapEmitter {
+  pos: Vec3;
+  color: number;
+  /** Particles spawned per second. */
+  rate: number;
+  /** Emission velocity (direction + speed). */
+  dir: Vec3;
+}
+
+/** A volume that damages players standing inside it. */
+export interface HazardZone {
+  pos: Vec3;
+  size: Vec3;
+  color: number;
+  /** Damage per second applied to a player overlapping the box. */
+  dps: number;
+}
+
+/**
+ * A solid platform that patrols between `pos` and `pos + travel`, completing one
+ * full there-and-back cycle every `period` seconds. Position is a deterministic
+ * function of the synced match clock so client and server agree.
+ */
+export interface MovingPlatform {
+  pos: Vec3;
+  size: Vec3;
+  color: number;
+  /** Offset (added to pos) of the far end of the patrol. */
+  travel: Vec3;
+  /** Seconds for one full there-and-back cycle. */
+  period: number;
+  emissive?: number;
+  texture?: string;
+}
+
 /** A bomb plant zone. */
 export interface BombSite {
   id: "A" | "B";
@@ -66,6 +112,10 @@ export interface GameMap {
   boxes: MapBox[];
   pads?: JumpPad[];
   ramps?: Ramp[];
+  lights?: MapLight[];
+  emitters?: MapEmitter[];
+  hazards?: HazardZone[];
+  platforms?: MovingPlatform[];
   /** CT-team spawn positions (bomb defusal mode). */
   spawnsCT?: Vec3[];
   /** Bomb plant zones (bomb defusal mode). */

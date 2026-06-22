@@ -24,9 +24,9 @@ import {
   WEAPONS,
   DEFAULT_WEAPON,
   LOADOUT_WEAPONS,
-  CLASSES,
-  BOT_CLASS_IDS,
-  DEFAULT_CLASS,
+  abilityPair,
+  sanitizeAbilities,
+  BOT_ABILITY_IDS,
   ABILITIES,
   INVIS,
   CONFUSION,
@@ -55,11 +55,10 @@ import {
 } from "@drunkr/shared";
 
 const PORT = Number(process.env.PORT ?? 2567);
-/** Callsigns auto-granted admin on join (e.g. ADMIN_NAMES="fanny,zero"). Lets a
- * headless / tunneled host designate admins without an interactive console. */
-const ADMIN_NAMES = new Set(
-  (process.env.ADMIN_NAMES ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
-);
+/** Secret phrase a player can type in chat to self-grant admin. The message is
+ * swallowed (never broadcast) so it stays hidden. Set ADMIN_SECRET to override
+ * the dev default; empty string disables it entirely. */
+const ADMIN_SECRET = process.env.ADMIN_SECRET ?? "drunkr-admin";
 const DEFAULT_MAP = process.env.MAP && MAPS[process.env.MAP] ? process.env.MAP : "neon_yard";
 const DEFAULT_BOTS = Number(process.env.BOTS ?? 4);
 const MAX_PLAYERS = 12;
@@ -190,12 +189,14 @@ interface Actor {
   /** Slow multiplier applied while `slowUntil` is active (bots use it directly). */
   slowMul?: number;
   /** Requested class change, applied on the next respawn. */
-  pendingCls?: string;
+  pendingAbilities?: string[];
   /** Multikill tracking: timestamp of the last kill and the running combo count. */
   lastKillAt?: number;
   multiKill?: number;
   /** Custom Locker palettes: weaponId → [body,emissive,accent,metal,steel,glow]. */
   lockerSkins?: Record<string, number[]>;
+  /** Fractional hazard damage carried between ticks (applied as whole points). */
+  hazardAccum?: number;
 }
 
 /** Set the broadcast palette for the actor's currently-held weapon (from the Locker). */
@@ -346,11 +347,31 @@ function validateMap(m: unknown): GameMap | null {
         ...(validTex(r.texture) ? { texture: r.texture } : {}),
       }))
     : undefined;
+  const lights = Array.isArray(raw.lights)
+    ? raw.lights.slice(0, 64).map((l) => ({ pos: vec(l.pos), color: col(l.color), intensity: clamp(num(l.intensity, 1), 0, 8), range: clamp(num(l.range, 20), 1, 400) }))
+    : undefined;
+  const emitters = Array.isArray(raw.emitters)
+    ? raw.emitters.slice(0, 64).map((e) => ({ pos: vec(e.pos), color: col(e.color), rate: clamp(num(e.rate, 20), 0, 200), dir: vec(e.dir) }))
+    : undefined;
+  const hazards = Array.isArray(raw.hazards)
+    ? raw.hazards.slice(0, 64).map((h) => ({ pos: vec(h.pos), size: sizeVec(h.size), color: col(h.color), dps: clamp(num(h.dps, 20), 0, 1000) }))
+    : undefined;
+  const platforms = Array.isArray(raw.platforms)
+    ? raw.platforms.slice(0, 64).map((p) => ({
+        pos: vec(p.pos), size: sizeVec(p.size), color: col(p.color), travel: vec(p.travel), period: clamp(num(p.period, 4), 0.2, 120),
+        ...(isFiniteNum(p.emissive) ? { emissive: col(p.emissive) } : {}),
+        ...(validTex(p.texture) ? { texture: p.texture } : {}),
+      }))
+    : undefined;
   return {
     name: (typeof raw.name === "string" ? raw.name : "Custom").slice(0, 24),
     bounds, spawns, boxes,
     ...(pads && pads.length ? { pads } : {}),
     ...(ramps && ramps.length ? { ramps } : {}),
+    ...(lights && lights.length ? { lights } : {}),
+    ...(emitters && emitters.length ? { emitters } : {}),
+    ...(hazards && hazards.length ? { hazards } : {}),
+    ...(platforms && platforms.length ? { platforms } : {}),
   };
 }
 
@@ -508,7 +529,7 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
   const s = pickSpawn(room);
   const hue = isFiniteNum(prefs?.skin) ? clamp(prefs!.skin!, 0, 1) : Math.random();
   const weapon = prefs?.weapon && LOADOUT_WEAPONS.includes(prefs.weapon) ? prefs.weapon : DEFAULT_WEAPON;
-  const cls = prefs?.cls && CLASSES[prefs.cls] ? prefs.cls : DEFAULT_CLASS;
+  const abilities = sanitizeAbilities(prefs?.abilities);
   // Cosmetics are pure strings the server only stores + echoes (client validates).
   const wepSkin = typeof prefs?.wepSkin === "string" ? prefs.wepSkin.slice(0, 24) : undefined;
   const accessory = typeof prefs?.accessory === "string" ? prefs.accessory.slice(0, 24) : undefined;
@@ -518,7 +539,7 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
     yaw: 0, pitch: 0,
     health: PLAYER.maxHealth, hue,
     kills: 0, deaths: 0, assists: 0, dead: false,
-    weapon, cls, invis: false, posture: 0,
+    weapon, abilities, invis: false, posture: 0,
     wepSkin, accessory,
     shotsFired: 0, shotsHit: 0, headshots: 0,
   };
@@ -710,9 +731,9 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
     return;
   }
 
-  const cls = CLASSES[actor.state.cls] ?? CLASSES[DEFAULT_CLASS];
-  // You may only use your own class's server-side abilities.
-  if (ability !== cls.F && ability !== cls.C) return;
+  const pair = abilityPair(actor.state.abilities);
+  // You may only use your own two chosen server-side abilities.
+  if (ability !== pair.F && ability !== pair.C) return;
   const def = ABILITIES[ability as keyof typeof ABILITIES];
   if (!def || !def.server || actor.state.dead) return;
   const now = Date.now();
@@ -1315,10 +1336,10 @@ function respawn(room: Room, a: Actor) {
   a.grounded = false;
   a.damageLog = [];
   a.shockwavePending = false;
-  // Apply any class change requested while alive/dead.
-  if (a.pendingCls && CLASSES[a.pendingCls]) {
-    a.state.cls = a.pendingCls;
-    a.pendingCls = undefined;
+  // Apply any ability-loadout change requested while alive/dead.
+  if (a.pendingAbilities) {
+    a.state.abilities = sanitizeAbilities(a.pendingAbilities);
+    a.pendingAbilities = undefined;
   }
   grantSpawnProtection(a);
   if (a.ai) {
@@ -1337,9 +1358,12 @@ function spawnBot(room: Room) {
   const state = makeState(room, id, name);
   const roll = Math.random();
   state.weapon = roll < 0.3 ? "sniper" : roll < 0.5 ? "shotgun" : "ak";
-  // Bots only roll the original classes (the new movement abilities are
-  // client-driven and would no-op on a bot).
-  state.cls = BOT_CLASS_IDS[Math.floor(Math.random() * BOT_CLASS_IDS.length)];
+  // Bots roll two distinct bot-safe abilities (client-driven movement
+  // abilities would no-op on a bot, so only server-processed ones are eligible).
+  const pool = [...BOT_ABILITY_IDS];
+  const f = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+  const c = pool.length ? pool[Math.floor(Math.random() * pool.length)] : f;
+  state.abilities = [f, c];
   const persona = botBehaviorFor(state.weapon);
   room.actors.set(id, {
     id, ws: null, state,
@@ -1613,19 +1637,15 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
 
   // === ABILITIES ===
   if (now >= ai.abilityFAt) {
-    const cls = CLASSES[me.cls] ?? CLASSES[DEFAULT_CLASS];
-    if (cls.F) {
-      const fwd = { x: -Math.sin(me.yaw), y: 0.2, z: -Math.cos(me.yaw) };
-      handleAbility(room, bot, cls.F, eye(me), fwd);
-    }
+    const { F } = abilityPair(me.abilities);
+    const fwd = { x: -Math.sin(me.yaw), y: 0.2, z: -Math.cos(me.yaw) };
+    handleAbility(room, bot, F, eye(me), fwd);
     ai.abilityFAt = now + rng(8_000, 20_000);
   }
   if (now >= ai.abilityCAt) {
-    const cls = CLASSES[me.cls] ?? CLASSES[DEFAULT_CLASS];
-    if (cls.C) {
-      const fwd = { x: -Math.sin(me.yaw), y: 0.4, z: -Math.cos(me.yaw) };
-      handleAbility(room, bot, cls.C, eye(me), fwd);
-    }
+    const { C } = abilityPair(me.abilities);
+    const fwd = { x: -Math.sin(me.yaw), y: 0.4, z: -Math.cos(me.yaw) };
+    handleAbility(room, bot, C, eye(me), fwd);
     ai.abilityCAt = now + rng(10_000, 25_000);
   }
 
@@ -2038,9 +2058,6 @@ wss.on("connection", (ws) => {
     }
     broadcast(target, { t: "pjoin", player: state }, id);
     console.log(`+ ${state.name} (#${id}) -> ${target.name} (${realCount(target)} players)`);
-    // Headless hosts can pre-designate admins by callsign (ADMIN_NAMES env),
-    // since a tunneled / detached server has no interactive console.
-    if (actor && ADMIN_NAMES.has(state.name.trim().toLowerCase())) setAdmin(actor, true);
   }
 
   ws.on("message", (raw) => {
@@ -2139,9 +2156,9 @@ wss.on("connection", (ws) => {
           actor.nextShot = Math.max(actor.nextShot, Date.now() + WEAPON_SWITCH_MS);
         }
         break;
-      case "class":
-        // Class change is queued and applied on the next respawn (no mid-life swap).
-        if (typeof msg.cls === "string" && CLASSES[msg.cls]) actor.pendingCls = msg.cls;
+      case "abilities":
+        // Ability change is queued and applied on the next respawn (no mid-life swap).
+        if (Array.isArray(msg.abilities)) actor.pendingAbilities = sanitizeAbilities(msg.abilities);
         break;
       case "pong":
         // Latency reply — RTT is now minus the timestamp we sent in the ping.
@@ -2209,7 +2226,13 @@ wss.on("connection", (ws) => {
         break;
       case "chat": {
         const text = String(msg.text ?? "").trim().slice(0, 120);
-        if (text) broadcast(room, { t: "chat", name: actor.state.name, text });
+        if (!text) break;
+        // Secret admin phrase: swallow the message (never broadcast) and grant.
+        if (ADMIN_SECRET && text === ADMIN_SECRET) {
+          if (!actor.admin) setAdmin(actor, true);
+          break;
+        }
+        broadcast(room, { t: "chat", name: actor.state.name, text });
         break;
       }
     }
@@ -2229,21 +2252,40 @@ wss.on("connection", (ws) => {
 // --- loops -----------------------------------------------------------------
 
 let lastTick = Date.now();
+/** Damage players standing in hazard zones (applied in whole points per tick). */
+function applyHazards(room: Room, dt: number) {
+  if (!room.map.hazards?.length) return;
+  const now = Date.now();
+  for (const a of room.actors.values()) {
+    if (a.state.dead || a.god || (a.invulnUntil && now < a.invulnUntil)) continue;
+    const dps = room.world.hazardDps(a.state.pos, MOVE.radius, MOVE.height);
+    if (dps <= 0) { a.hazardAccum = 0; continue; }
+    a.hazardAccum = (a.hazardAccum ?? 0) + dps * dt;
+    const whole = Math.floor(a.hazardAccum);
+    if (whole <= 0) continue;
+    a.hazardAccum -= whole;
+    dealDamage(room, a, a, whole, false); // environmental self-damage (handles death/respawn)
+  }
+}
+
 setInterval(() => {
   const now = Date.now();
   const dt = Math.min(0.1, (now - lastTick) / 1000);
   lastTick = now;
   for (const room of rooms.values()) {
+    room.world.setTime(now); // position moving platforms before any collision this tick
     if (room.intermission) {
       if (now >= room.intermissionEndsAt) startNextMatch(room);
     } else if (room.mode === "bomb") {
       tickBomb(room, now);
       for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
+      applyHazards(room, dt);
       if (room.projectiles.length) updateProjectiles(room, now, dt);
       if (room.decoys.length) updateDecoys(room, now, dt);
     } else {
       if (now >= room.matchEndsAt) endMatch(room);
       for (const a of room.actors.values()) if (a.ai) updateBot(room, a, now, dt);
+      applyHazards(room, dt);
       if (room.projectiles.length) updateProjectiles(room, now, dt);
       if (room.decoys.length) updateDecoys(room, now, dt);
     }

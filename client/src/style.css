@@ -1201,6 +1201,45 @@ body {
 .lk-reset:hover { border-color: var(--neon-pink); color: var(--neon-pink); }
 .lk-hint { font-size: 0.62rem; opacity: 0.45; margin-top: 0.3rem; }
 
+/* --- Locker ability picker --- */
+.lk-slots { display: flex; gap: 0.5rem; }
+.lk-slot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  background: #05060c;
+  border: 1px solid #ffffff22;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.lk-slot b { color: var(--neon-cyan); letter-spacing: 0.05rem; }
+.lk-slot.active { border-color: var(--neon-cyan); box-shadow: inset 0 0 10px #18e0ff22; }
+.lk-abilities { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+.lk-abil {
+  padding: 0.26rem 0.45rem;
+  background: #05060c;
+  border: 1px solid #ffffff1c;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+.lk-abil:hover { border-color: var(--neon-pink); }
+.lk-abil.f { border-color: var(--neon-cyan); color: var(--neon-cyan); box-shadow: inset 0 0 8px #18e0ff22; }
+.lk-abil.c { border-color: var(--neon-amber, #ffb23d); color: var(--neon-amber, #ffb23d); box-shadow: inset 0 0 8px #ffb23d22; }
+.lk-abil-desc {
+  min-height: 1.6em;
+  margin-top: 0.5rem;
+  font-size: 0.66rem;
+  line-height: 1.4;
+  color: var(--fg);
+  opacity: 0.7;
+}
+
 /* --- Personal kill / assist confirmation (bottom-center) --- */
 #killconfirm {
   position: absolute;

@@ -5,9 +5,9 @@ import {
   MOVE,
   PLAYER,
   WEAPONS,
-  CLASSES,
   ABILITIES,
-  DEFAULT_CLASS,
+  DEFAULT_ABILITIES,
+  sanitizeAbilities,
   BOMB,
   INVIS,
   UPDRAFT,
@@ -73,7 +73,6 @@ export class Game {
   private pauseMenu = document.getElementById("pause-menu")!;
   private pmTitle = document.getElementById("pm-title")!;
   private pmName = document.getElementById("pm-name") as HTMLInputElement;
-  private pmClass = document.getElementById("pm-class") as HTMLSelectElement;
   private pmResumeBtn = document.getElementById("pm-resume") as HTMLButtonElement;
   private settingsPanel!: SettingsPanel;
   private locker = new Locker();
@@ -95,7 +94,8 @@ export class Game {
   /** Decaying camera-shake amount (0..~1.4), driven by nearby explosions. */
   private shake = 0;
   private fellSent = false;
-  private localCls = DEFAULT_CLASS;
+  /** Local player's chosen abilities [F, C]; mirrors the server. */
+  private localAbilities: string[] = [...DEFAULT_ABILITIES];
   /** Client-side ability cooldown end times (performance.now ms). */
   private abilityCd: Record<string, number> = {};
   /** Live grenade meshes by projectile id. */
@@ -255,7 +255,7 @@ export class Game {
       this.roster.set(p.id, p);
       if (p.id === this.localId) {
         this.local.spawn(p.pos.x, p.pos.y, p.pos.z);
-        this.localCls = p.cls ?? DEFAULT_CLASS;
+        this.localAbilities = sanitizeAbilities(p.abilities);
         // Match the loadout the server assigned us (no need to re-send it).
         this.weapon.switchTo(p.weapon);
         this.applyWeaponMods(p.weapon);
@@ -273,9 +273,8 @@ export class Game {
   // ---- Pause / death menu -----------------------------------------------
 
   private initPauseMenu() {
-    // Pre-fill name and class from localStorage. Skin + cosmetics live in the Locker.
+    // Pre-fill name from localStorage. Loadout + cosmetics live in the Locker.
     this.pmName.value = localStorage.getItem("drunkr.name") ?? "";
-    this.pmClass.value = localStorage.getItem("drunkr.class") ?? "wind";
 
     // Name changes save immediately.
     this.pmName.addEventListener("input", () => {
@@ -285,15 +284,16 @@ export class Game {
 
     // Locker: weapon skins live-update the held viewmodel; accessory/skin
     // changes for the avatar apply on the next respawn (broadcast via prefs at join).
+    // Ability changes are queued server-side and hotswap on the next respawn.
     document.getElementById("pm-open-locker")!.addEventListener("click", () => {
-      this.locker.open(() => this.weapon.refreshSkin());
-    });
-
-    // Class changes save immediately and hotswap on the next respawn.
-    this.pmClass.addEventListener("change", () => {
-      localStorage.setItem("drunkr.class", this.pmClass.value);
-      this.net.send({ t: "class", cls: this.pmClass.value });
-      this.hud.toast("Class applies on next spawn", "info");
+      this.locker.open(
+        () => this.weapon.refreshSkin(),
+        undefined,
+        (abilities) => {
+          this.net.send({ t: "abilities", abilities });
+          this.hud.toast("Abilities apply on next spawn", "info");
+        },
+      );
     });
 
     // Shared settings UI (same component as the lobby), with live audio/graphics
@@ -882,12 +882,12 @@ export class Game {
     return { o: { x: o.x, y: o.y, z: o.z }, d: { x: d.x, y: d.y, z: d.z } };
   }
 
-  /** Fire the F or C ability of the local player's class. */
+  /** Fire the local player's F (slot 0) or C (slot 1) ability. */
   private useAbility(slot: "F" | "C") {
     if (this.local.dead) return;
-    const cls = CLASSES[this.localCls] ?? CLASSES[DEFAULT_CLASS];
-    const id = (slot === "F" ? cls.F : cls.C) as AbilityId;
+    const id = (slot === "F" ? this.localAbilities[0] : this.localAbilities[1]) as AbilityId;
     const def = ABILITIES[id];
+    if (!def) return;
     const now = performance.now();
     if (now < (this.abilityCd[id] ?? 0)) return;
 
@@ -1142,14 +1142,14 @@ export class Game {
   }
 
   private updateAbilityHud() {
-    const cls = CLASSES[this.localCls] ?? CLASSES[DEFAULT_CLASS];
     const now = performance.now();
-    for (const slot of ["F", "C"] as const) {
-      const id = slot === "F" ? cls.F : cls.C;
-      const def = ABILITIES[id];
+    (["F", "C"] as const).forEach((slot, i) => {
+      const id = this.localAbilities[i];
+      const def = ABILITIES[id as keyof typeof ABILITIES];
+      if (!def) return;
       const remain = Math.max(0, (this.abilityCd[id] ?? 0) - now);
       this.hud.setAbility(slot, def.name, remain <= 0, Math.ceil(remain / 1000));
-    }
+    });
   }
 
   /** Clear ability cooldowns so they're ready again after respawning. */
@@ -1169,8 +1169,8 @@ export class Game {
   private syncLocal(p: PlayerState) {
     const wasDead = this.local.dead;
     this.local.dead = p.dead;
-    // Reflect server-applied class changes (hotswap takes effect on respawn).
-    if (p.cls && p.cls !== this.localCls) this.localCls = p.cls;
+    // Reflect server-applied ability changes (hotswap takes effect on respawn).
+    if (p.abilities && p.abilities.join() !== this.localAbilities.join()) this.localAbilities = p.abilities;
     if (!p.dead && wasDead) { this.hud.setDead(false); this.clearDeathTracer(); }
     if (p.dead && !wasDead) { this.hud.setDead(true); this.resetAbilityCooldowns(); }
     this.hud.setHealth(p.health);
@@ -1300,6 +1300,12 @@ export class Game {
       const m = this.input.consumeMouse();
       this.local.look(m.dx, m.dy);
     }
+
+    // Position moving platforms (and animate fx) on the synced match clock so
+    // local prediction collides against them where the server has them.
+    const serverNow = Date.now() + this.clockOffset;
+    this.arena.collision.setTime(serverNow);
+    this.arena.update(serverNow, dt);
 
     const mv = this.local.update(this.input, dt);
     if (mv.jumped) this.sfx.jump();

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { MOVE } from "@drunkr/shared";
+import { MOVE, DEFAULT_ABILITIES } from "@drunkr/shared";
 
 /**
  * Cosmetic catalogue — all unlocked. Weapon skins are colour palettes applied
@@ -85,19 +85,25 @@ export interface LockerData {
   /** weaponId → custom palette (absent = use the default skin). */
   skins: Record<string, Palette>;
   accessory: string;
+  /** Chosen abilities [F, C] (replaces the old class choice). */
+  abilities: string[];
 }
 
 const LOCKER_KEY = "drunkr.locker";
+
+function validAbilities(a: unknown): string[] {
+  return Array.isArray(a) && a.length >= 2 ? [String(a[0]), String(a[1])] : [...DEFAULT_ABILITIES];
+}
 
 export function loadLocker(): LockerData {
   try {
     const raw = localStorage.getItem(LOCKER_KEY);
     if (raw) {
       const d = JSON.parse(raw) as Partial<LockerData>;
-      return { skins: d.skins ?? {}, accessory: d.accessory ?? "none" };
+      return { skins: d.skins ?? {}, accessory: d.accessory ?? "none", abilities: validAbilities(d.abilities) };
     }
   } catch { /* ignore */ }
-  return { skins: {}, accessory: localStorage.getItem("drunkr.accessory") ?? "none" };
+  return { skins: {}, accessory: localStorage.getItem("drunkr.accessory") ?? "none", abilities: [...DEFAULT_ABILITIES] };
 }
 
 export function saveLocker(d: LockerData) {

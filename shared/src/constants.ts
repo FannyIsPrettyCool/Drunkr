@@ -118,62 +118,66 @@ export interface AbilityDef {
   cooldownMs: number;
   /** True if the server must process it (vs a purely client-side movement). */
   server: boolean;
+  /** One-line tooltip shown in the Locker ability picker. */
+  desc: string;
 }
 
 export const ABILITIES: Record<AbilityId, AbilityDef> = {
-  dash: { id: "dash", name: "Dash", cooldownMs: DASH.cooldownMs, server: false },
-  updraft: { id: "updraft", name: "Updraft", cooldownMs: 5000, server: false },
-  invis: { id: "invis", name: "Cloak", cooldownMs: 15000, server: true },
-  confusion: { id: "confusion", name: "Confuse", cooldownMs: 12000, server: true },
-  flash: { id: "flash", name: "Flash", cooldownMs: 9000, server: true },
-  frag: { id: "frag", name: "Frag", cooldownMs: 13000, server: true },
-  blink: { id: "blink", name: "Blink", cooldownMs: 6000, server: false },
-  fortify: { id: "fortify", name: "Fortify", cooldownMs: 12000, server: true },
-  shockwave: { id: "shockwave", name: "Shockwave", cooldownMs: 10000, server: true },
-  bloodlust: { id: "bloodlust", name: "Bloodlust", cooldownMs: 11000, server: true },
-  siphon: { id: "siphon", name: "Siphon", cooldownMs: 9000, server: true },
+  dash: { id: "dash", name: "Dash", cooldownMs: DASH.cooldownMs, server: false, desc: "Burst forward instantly in your move direction." },
+  updraft: { id: "updraft", name: "Updraft", cooldownMs: 5000, server: false, desc: "Launch straight up for extra height." },
+  invis: { id: "invis", name: "Cloak", cooldownMs: 15000, server: true, desc: "Turn invisible for a few seconds." },
+  confusion: { id: "confusion", name: "Confuse", cooldownMs: 12000, server: true, desc: "Scramble the controls of nearby enemies." },
+  flash: { id: "flash", name: "Flash", cooldownMs: 9000, server: true, desc: "Throw a grenade that blinds anyone looking at it." },
+  frag: { id: "frag", name: "Frag", cooldownMs: 13000, server: true, desc: "Throw a fragmentation grenade for AoE damage." },
+  blink: { id: "blink", name: "Blink", cooldownMs: 6000, server: false, desc: "Teleport a short distance forward." },
+  fortify: { id: "fortify", name: "Fortify", cooldownMs: 12000, server: true, desc: "Heal to full plus temporary overheal." },
+  shockwave: { id: "shockwave", name: "Shockwave", cooldownMs: 10000, server: true, desc: "Leap forward, then slam down for AoE damage." },
+  bloodlust: { id: "bloodlust", name: "Bloodlust", cooldownMs: 11000, server: true, desc: "Timed buff: damage heals you and you move faster." },
+  siphon: { id: "siphon", name: "Siphon", cooldownMs: 9000, server: true, desc: "Drain health from all nearby enemies at once." },
   // --- New abilities ---
-  grapple: { id: "grapple", name: "Grapple", cooldownMs: 6000, server: false },
-  wallkick: { id: "wallkick", name: "Wall Kick", cooldownMs: 2500, server: false },
-  slipstream: { id: "slipstream", name: "Slipstream", cooldownMs: 7000, server: false },
-  recall: { id: "recall", name: "Recall", cooldownMs: 12000, server: true },
-  timebubble: { id: "timebubble", name: "Time Bubble", cooldownMs: 13000, server: true },
-  pull: { id: "pull", name: "Pull", cooldownMs: 9000, server: true },
-  reflect: { id: "reflect", name: "Reflect", cooldownMs: 10000, server: true },
-  repulse: { id: "repulse", name: "Repulse", cooldownMs: 9000, server: true },
-  decoy: { id: "decoy", name: "Decoy", cooldownMs: 12000, server: true },
+  grapple: { id: "grapple", name: "Grapple", cooldownMs: 6000, server: false, desc: "Fire a hook and reel toward a surface." },
+  wallkick: { id: "wallkick", name: "Wall Kick", cooldownMs: 2500, server: false, desc: "Kick off a wall to keep your momentum going." },
+  slipstream: { id: "slipstream", name: "Slipstream", cooldownMs: 7000, server: false, desc: "Short burst of extra movement speed." },
+  recall: { id: "recall", name: "Recall", cooldownMs: 12000, server: true, desc: "Rewind to where you were a few seconds ago." },
+  timebubble: { id: "timebubble", name: "Time Bubble", cooldownMs: 13000, server: true, desc: "Drop a field that slows enemies caught inside." },
+  pull: { id: "pull", name: "Pull", cooldownMs: 9000, server: true, desc: "Yank a targeted enemy toward you." },
+  reflect: { id: "reflect", name: "Reflect", cooldownMs: 10000, server: true, desc: "Briefly bounce incoming damage back at attackers." },
+  repulse: { id: "repulse", name: "Repulse", cooldownMs: 9000, server: true, desc: "Knock back everything around you." },
+  decoy: { id: "decoy", name: "Decoy", cooldownMs: 12000, server: true, desc: "Spawn a holographic clone to bait enemies." },
 };
 
-export interface ClassDef {
-  id: string;
-  name: string;
-  /** Primary (F) and secondary (C) ability ids. */
-  F: AbilityId;
-  C: AbilityId;
+/**
+ * Loadout model: there are no classes — a player picks any two abilities in the
+ * Locker (slot 0 → F key, slot 1 → C key). Bots roll two random bot-safe ones.
+ */
+
+/** All ability ids in catalogue order — the Locker picker lists these. */
+export const ABILITY_IDS = Object.keys(ABILITIES) as AbilityId[];
+
+/** Display order + label for the ability pickers. */
+export const ABILITY_LIST: { id: AbilityId; name: string }[] =
+  ABILITY_IDS.map((id) => ({ id, name: ABILITIES[id].name }));
+
+/** Default loadout when a player hasn't chosen (Dash + Updraft). */
+export const DEFAULT_ABILITIES: [AbilityId, AbilityId] = ["dash", "updraft"];
+
+/** Abilities a bot may roll — only server-processed ones work for bots
+ *  (client-driven movement abilities would no-op). */
+export const BOT_ABILITY_IDS = ABILITY_IDS.filter((id) => ABILITIES[id].server);
+
+/** Validate a chosen [F, C] pair, falling back to defaults for bad entries. */
+export function sanitizeAbilities(a: unknown): [AbilityId, AbilityId] {
+  const arr = Array.isArray(a) ? a : [];
+  const f = ABILITIES[arr[0] as AbilityId] ? (arr[0] as AbilityId) : DEFAULT_ABILITIES[0];
+  const c = ABILITIES[arr[1] as AbilityId] ? (arr[1] as AbilityId) : DEFAULT_ABILITIES[1];
+  return [f, c];
 }
 
-export const CLASSES: Record<string, ClassDef> = {
-  wind: { id: "wind", name: "Wind Master", F: "dash", C: "updraft" },
-  illusionist: { id: "illusionist", name: "Illusionist", F: "invis", C: "confusion" },
-  cyborg: { id: "cyborg", name: "Cyborg", F: "flash", C: "frag" },
-  juggernaut: { id: "juggernaut", name: "Juggernaut", F: "fortify", C: "shockwave" },
-  phantom: { id: "phantom", name: "Phantom", F: "blink", C: "invis" },
-  vampire: { id: "vampire", name: "Vampire", F: "bloodlust", C: "siphon" },
-  // --- New classes ---
-  slinger: { id: "slinger", name: "Slinger", F: "grapple", C: "dash" },
-  skater: { id: "skater", name: "Skater", F: "wallkick", C: "slipstream" },
-  vaulter: { id: "vaulter", name: "Vaulter", F: "dash", C: "blink" },
-  chronos: { id: "chronos", name: "Chronos", F: "recall", C: "timebubble" },
-  magnetar: { id: "magnetar", name: "Magnetar", F: "pull", C: "frag" },
-  bulwark: { id: "bulwark", name: "Bulwark", F: "reflect", C: "repulse" },
-  mirage: { id: "mirage", name: "Mirage", F: "decoy", C: "blink" },
-  saboteur: { id: "saboteur", name: "Saboteur", F: "confusion", C: "flash" },
-};
-export const CLASS_IDS = Object.keys(CLASSES);
-/** Classes the bots are allowed to roll (only those with bot-safe abilities —
- * the new movement abilities are client-driven and would no-op for a bot). */
-export const BOT_CLASS_IDS = ["wind", "illusionist", "cyborg", "juggernaut", "phantom", "vampire"];
-export const DEFAULT_CLASS = "wind";
+/** Resolve the F (primary) and C (secondary) ability from a stored pair. */
+export function abilityPair(abilities: readonly string[] | undefined): { F: AbilityId; C: AbilityId } {
+  const [F, C] = sanitizeAbilities(abilities);
+  return { F, C };
+}
 
 export const INVIS = { durationMs: 3000, speedMul: 1.4 };
 export const CONFUSION = { radius: 13 };

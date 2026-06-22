@@ -28,13 +28,16 @@
         <option value="wedge">Wedge</option>
       </select>
       <button id="add-pad">+ Pad</button>
-      <button id="add-ramp">+ Ramp</button>
+      <button id="add-light">+ Light</button>
+      <button id="add-emitter">+ Emitter</button>
+      <button id="add-hazard">+ Hazard</button>
+      <button id="add-platform">+ Platform</button>
       <button id="add-spawn">+ Spawn</button>
       <span class="sep"></span>
       <button class="mode active" data-mode="translate" title="Move (W)">Move</button>
       <button class="mode" data-mode="rotate" title="Rotate (E)">Rotate</button>
       <button class="mode" data-mode="scale" title="Scale (R)">Scale</button>
-      <button id="anchor" class="toggle active" title="Anchored resize: one side stays put while you scale (off = grow from center)">Anchor</button>
+      <button id="anchor" class="toggle" title="Anchored resize: one side stays put while you scale (off = grow symmetrically from center)">Anchor</button>
       <label class="snaplbl" title="Snap moves/sizes to a grid step">Snap
         <input id="snap-on" type="checkbox" checked />
         <input id="snap-size" type="number" step="0.5" min="0.1" value="1" />
@@ -81,10 +84,30 @@
           <label>Y <input id="p-ry" type="number" step="15" /></label>
           <label>Z <input id="p-rz" type="number" step="15" /></label>
         </div>
-        <div class="row3 launch-fields hidden">
-          <label>LvX <input id="p-lx" type="number" step="1" /></label>
-          <label>LvY <input id="p-ly" type="number" step="1" /></label>
-          <label>LvZ <input id="p-lz" type="number" step="1" /></label>
+        <div class="grouplbl pad-fields hidden">LAUNCH</div>
+        <div class="row3 pad-fields hidden">
+          <label>Power <input id="p-str" type="number" step="1" /></label>
+          <label>Yaw° <input id="p-yaw" type="number" step="15" /></label>
+          <label>Pitch° <input id="p-pitch" type="number" step="5" /></label>
+        </div>
+        <div class="row3 light-fields hidden">
+          <label>Intens <input id="p-lint" type="number" step="0.2" /></label>
+          <label>Range <input id="p-lrange" type="number" step="1" /></label>
+        </div>
+        <div class="row3 emitter-fields hidden">
+          <label>Rate <input id="p-erate" type="number" step="2" /></label>
+          <label>Yaw° <input id="p-eyaw" type="number" step="15" /></label>
+          <label>Pitch° <input id="p-epitch" type="number" step="5" /></label>
+        </div>
+        <label class="field hazard-fields hidden">DMG / SEC
+          <input id="p-hdps" type="number" step="5" />
+        </label>
+        <div class="grouplbl platform-fields hidden">TRAVEL + PERIOD</div>
+        <div class="row4 platform-fields hidden">
+          <label>X <input id="p-tx" type="number" step="1" /></label>
+          <label>Y <input id="p-ty" type="number" step="1" /></label>
+          <label>Z <input id="p-tz" type="number" step="1" /></label>
+          <label>Sec <input id="p-period" type="number" step="0.5" /></label>
         </div>
         <label class="field shape-fields hidden">SHAPE
           <select id="p-shape">

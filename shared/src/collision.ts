@@ -1,8 +1,17 @@
-import type { GameMap, MapBox } from "./map.js";
+import type { GameMap, MapBox, MovingPlatform } from "./map.js";
 import type { Vec3 } from "./math.js";
 
 /** Tallest ledge you can walk straight up without jumping (step-up height). */
 const STEP_HEIGHT = 0.55;
+
+/** Deterministic position of a moving platform at match-clock time `ms`. It
+ * patrols pos → pos+travel → pos on a triangle wave with the given period. */
+export function platformPosAt(p: MovingPlatform, ms: number): Vec3 {
+  const period = Math.max(0.2, p.period);
+  const phase = ((ms / 1000) % period + period) % period / period; // 0..1
+  const t = phase < 0.5 ? phase * 2 : 2 - phase * 2;               // 0→1→0
+  return { x: p.pos.x + p.travel.x * t, y: p.pos.y + p.travel.y * t, z: p.pos.z + p.travel.z * t };
+}
 
 export interface AABB {
   minX: number; minY: number; minZ: number;
@@ -75,6 +84,15 @@ export class CollisionWorld {
   readonly shapes: ShapeCollider[];
   private pads: PadZone[];
   private ramps: RampZone[];
+  /** Moving platforms + their current-frame AABBs (recomputed each move()). */
+  private platforms: MovingPlatform[];
+  private dynBoxes: AABB[] = [];
+  /** Static boxes + current dynamic platform boxes — what movement collides against. */
+  private collBoxes: AABB[];
+  /** Hazard volumes (damage zones). */
+  private hazards: { aabb: AABB; dps: number }[];
+  /** Match-clock time (ms) used to position moving platforms. */
+  private time = 0;
 
   constructor(map: GameMap) {
     this.boxes = [];
@@ -124,6 +142,36 @@ export class CollisionWorld {
       height: r.size.y,
       dir: r.dir,
     }));
+    this.platforms = (map.platforms ?? []).slice();
+    this.hazards = (map.hazards ?? []).map((h) => ({
+      aabb: {
+        minX: h.pos.x - h.size.x / 2, minY: h.pos.y - h.size.y / 2, minZ: h.pos.z - h.size.z / 2,
+        maxX: h.pos.x + h.size.x / 2, maxY: h.pos.y + h.size.y / 2, maxZ: h.pos.z + h.size.z / 2,
+      },
+      dps: h.dps,
+    }));
+    this.collBoxes = this.boxes;
+  }
+
+  /** Set the synced match-clock time (ms) used to position moving platforms. */
+  setTime(ms: number) { this.time = ms; }
+
+  /** Recompute the current-frame AABB for each moving platform. */
+  private updateDynBoxes() {
+    if (!this.platforms.length) { this.collBoxes = this.boxes; return; }
+    this.dynBoxes = this.platforms.map((p) => {
+      const c = platformPosAt(p, this.time);
+      const hx = p.size.x / 2, hy = p.size.y / 2, hz = p.size.z / 2;
+      return { minX: c.x - hx, minY: c.y - hy, minZ: c.z - hz, maxX: c.x + hx, maxY: c.y + hy, maxZ: c.z + hz };
+    });
+    this.collBoxes = this.boxes.concat(this.dynBoxes);
+  }
+
+  /** Total damage-per-second of every hazard zone the player capsule overlaps. */
+  hazardDps(pos: Vec3, radius: number, height: number): number {
+    let dps = 0;
+    for (const h of this.hazards) if (this.overlaps(pos, radius, height, h.aabb)) dps += h.dps;
+    return dps;
   }
 
   /** Surface height of a ramp under `pos`, or null if not over any ramp. When
@@ -172,6 +220,8 @@ export class CollisionWorld {
     dt: number,
     stepHeight: number = STEP_HEIGHT,
   ): { grounded: boolean; hitWall: boolean } {
+    // Position moving platforms for this frame, then collide against them too.
+    this.updateDynBoxes();
     // Sub-step so high speed (bhop, dash, jump pads, blink) can't tunnel
     // through walls or the floor in a single frame.
     const maxDisp = Math.max(Math.abs(vel.x), Math.abs(vel.y), Math.abs(vel.z)) * dt;
@@ -221,7 +271,7 @@ export class CollisionWorld {
       if (stepProgress > flatProgress + 1e-4 && !this.overlapsAny(pos, radius, height)) {
         // We cleared the obstacle up high — drop onto the step's top surface.
         let groundY = sy, found = false;
-        for (const b of this.boxes) {
+        for (const b of this.collBoxes) {
           if (
             pos.x - radius < b.maxX && pos.x + radius > b.minX &&
             pos.z - radius < b.maxZ && pos.z + radius > b.minZ &&
@@ -239,7 +289,7 @@ export class CollisionWorld {
 
     // --- Y axis ---
     pos.y += vel.y * dt;
-    for (const b of this.boxes) {
+    for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
       if (vel.y <= 0) {
         pos.y = b.maxY;
@@ -396,7 +446,7 @@ export class CollisionWorld {
   private moveAxisX(pos: Vec3, vel: Vec3, radius: number, height: number, dt: number): boolean {
     pos.x += vel.x * dt;
     let hit = false;
-    for (const b of this.boxes) {
+    for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
       if (vel.x > 0) pos.x = b.minX - radius;
       else if (vel.x < 0) pos.x = b.maxX + radius;
@@ -411,7 +461,7 @@ export class CollisionWorld {
   private moveAxisZ(pos: Vec3, vel: Vec3, radius: number, height: number, dt: number): boolean {
     pos.z += vel.z * dt;
     let hit = false;
-    for (const b of this.boxes) {
+    for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
       if (vel.z > 0) pos.z = b.minZ - radius;
       else if (vel.z < 0) pos.z = b.maxZ + radius;
@@ -423,7 +473,7 @@ export class CollisionWorld {
   }
 
   private overlapsAny(pos: Vec3, radius: number, height: number): boolean {
-    for (const b of this.boxes) if (this.overlaps(pos, radius, height, b)) return true;
+    for (const b of this.collBoxes) if (this.overlaps(pos, radius, height, b)) return true;
     for (const sc of this.shapes) if (this.overlapsShape(pos, radius, height, sc)) return true;
     return false;
   }
@@ -523,8 +573,9 @@ export class CollisionWorld {
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
     const len = Math.hypot(dx, dy, dz);
     if (len < 1e-4) return false;
+    this.updateDynBoxes(); // platforms block sightlines at their current position
     const steps = Math.ceil(len / 0.5);
-    for (const box of this.boxes) {
+    for (const box of this.collBoxes) {
       for (let i = 1; i < steps; i++) {
         const t = i / steps;
         const px = a.x + dx * t, py = a.y + dy * t, pz = a.z + dz * t;

@@ -30,18 +30,14 @@ const cfgName = document.getElementById("cfg-name") as HTMLInputElement;
 
 nameInput.value = localStorage.getItem("drunkr.name") ?? "";
 
-// Skin hue + cosmetics now live in the Locker (see Locker.ts).
-const classSel = document.getElementById("cfg-class") as HTMLSelectElement;
-classSel.value = localStorage.getItem("drunkr.class") ?? "wind";
-classSel.addEventListener("change", () => localStorage.setItem("drunkr.class", classSel.value));
-
+// Skin hue, abilities + cosmetics now live in the Locker (see Locker.ts).
 const locker = new Locker();
 document.getElementById("open-locker")!.addEventListener("click", () => locker.open());
 
 function prefs() {
   const l = loadLocker();
   const skin = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
-  return { skin, cls: classSel.value, lockerSkins: l.skins, accessory: l.accessory };
+  return { skin, abilities: l.abilities, lockerSkins: l.skins, accessory: l.accessory };
 }
 
 // --- Settings --------------------------------------------------------------
