@@ -489,7 +489,7 @@ export class Game {
           // origin) so they come out of the barrel, not the head.
           const start = this.remotes.muzzleWorld(msg.from, new THREE.Vector3()) ?? o;
           for (const dir of msg.dirs) {
-            this.weapon.remoteShot(start, new THREE.Vector3(dir.x, dir.y, dir.z));
+            this.weapon.remoteShot(start, new THREE.Vector3(dir.x, dir.y, dir.z), msg.weapon);
           }
         }
         // True 3D positional audio — PannerNode handles distance falloff.

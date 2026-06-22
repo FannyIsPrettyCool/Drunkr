@@ -1219,7 +1219,7 @@ body {
   background: radial-gradient(circle at 50% 40%, #141a2c, #05060c);
   border: 1px solid #ffffff14;
 }
-.lk-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 1rem; }
+.lk-pickers { display: grid; grid-template-columns: 1fr; gap: 0.35rem; }
 .lk-picker {
   display: flex;
   align-items: center;
@@ -1228,13 +1228,25 @@ body {
   letter-spacing: 0.06rem;
   opacity: 0.85;
 }
-.lk-picker input[type="color"] {
-  width: 42px;
-  height: 24px;
+.lk-mat { display: flex; align-items: center; gap: 0.4rem; }
+.lk-finish {
+  background: #0c0f1c;
+  color: var(--neon-cyan);
   border: 1px solid #ffffff33;
-  background: transparent;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.7rem;
+  padding: 2px 4px;
   cursor: pointer;
-  padding: 0;
+}
+.lk-picker input[type="color"] {
+  width: 40px;
+  height: 24px;
+  border: 1px solid var(--neon-cyan);
+  border-radius: 3px;
+  background: #000;
+  cursor: pointer;
+  padding: 1px;
 }
 .lk-reset {
   margin-top: 0.8rem;

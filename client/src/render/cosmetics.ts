@@ -115,6 +115,130 @@ export function resolveWeaponSkin(weaponId: string): WeaponSkin {
   return arrToSkin(loadLocker().skins[weaponId]) ?? WEAPON_SKINS.default;
 }
 
+// ---- Material finishes + per-weapon parts ---------------------------------
+// A part now carries a *material* (finish) as well as a colour, and each weapon
+// exposes its own named parts (no shared filler slots). Both are packed into one
+// int per part — top byte = finish index, low 24 bits = RGB — so the existing
+// `wepPalette: number[]` broadcast still carries everything.
+
+export interface Finish {
+  id: string;
+  label: string;
+  metalness: number;
+  roughness: number;
+  /** Emissive intensity — neon/energy glow (0 = inert; glows in the part colour). */
+  emissive: number;
+  /** <1 = see-through (glass). */
+  opacity?: number;
+}
+
+/** Ordered — the index is the stored/broadcast finish value. */
+export const FINISHES: Finish[] = [
+  { id: "metal",  label: "Metal",  metalness: 0.85, roughness: 0.38, emissive: 0 },
+  { id: "matte",  label: "Matte",  metalness: 0.1,  roughness: 0.85, emissive: 0 },
+  { id: "chrome", label: "Chrome", metalness: 1.0,  roughness: 0.08, emissive: 0 },
+  { id: "wood",   label: "Wood",   metalness: 0.0,  roughness: 0.72, emissive: 0 },
+  { id: "neon",   label: "Neon",   metalness: 0.25, roughness: 0.4,  emissive: 1.5 },
+  { id: "glass",  label: "Glass",  metalness: 0.0,  roughness: 0.06, emissive: 0.18, opacity: 0.4 },
+];
+const DEFAULT_FINISH = 0;
+
+export interface PartDef { key: string; label: string; color: number; finish: number; }
+
+/** Per-weapon customisable parts — names match the gun, no filler slots. */
+export const WEAPON_PARTS: Record<string, PartDef[]> = {
+  ak: [
+    { key: "frame",     label: "Receiver",   color: 0x1b1e2e, finish: 1 },
+    { key: "furniture", label: "Furniture",  color: 0x6a3d1c, finish: 3 },
+    { key: "barrel",    label: "Barrel",     color: 0x39414f, finish: 0 },
+    { key: "mag",       label: "Mag & Grip", color: 0x14161d, finish: 0 },
+    { key: "accent",    label: "Accent",     color: 0xff2d9b, finish: 4 },
+    { key: "core",      label: "Core",       color: 0x18e0ff, finish: 4 },
+  ],
+  sniper: [
+    { key: "frame",  label: "Frame",  color: 0x1b1e2e, finish: 1 },
+    { key: "barrel", label: "Barrel", color: 0x39414f, finish: 0 },
+    { key: "scope",  label: "Scope",  color: 0x14161d, finish: 0 },
+    { key: "grips",  label: "Grips",  color: 0x14161d, finish: 0 },
+    { key: "accent", label: "Accent", color: 0xff2d9b, finish: 4 },
+    { key: "lens",   label: "Lens",   color: 0x18e0ff, finish: 4 },
+  ],
+  shotgun: [
+    { key: "frame",     label: "Receiver",  color: 0x1b1e2e, finish: 1 },
+    { key: "barrel",    label: "Barrels",   color: 0x39414f, finish: 0 },
+    { key: "furniture", label: "Furniture", color: 0x2a1d12, finish: 3 },
+    { key: "accent",    label: "Neon Rib",  color: 0xff2d9b, finish: 4 },
+    { key: "core",      label: "Muzzle",    color: 0x18e0ff, finish: 4 },
+  ],
+  katana: [
+    { key: "blade",  label: "Blade",  color: 0xbfe6ff, finish: 2 },
+    { key: "edge",   label: "Edge",   color: 0x18e0ff, finish: 4 },
+    { key: "guard",  label: "Guard",  color: 0xff2d9b, finish: 0 },
+    { key: "handle", label: "Handle", color: 0x141019, finish: 1 },
+  ],
+};
+
+export function weaponParts(weaponId: string): PartDef[] {
+  return WEAPON_PARTS[weaponId] ?? WEAPON_PARTS.ak;
+}
+
+export interface ResolvedPart { key: string; color: number; finish: number; }
+
+/** Pack a part into one int: top byte = finish, low 24 bits = RGB colour. */
+export function packPart(color: number, finish: number): number {
+  return ((finish & 0x3f) << 24) | (color & 0xffffff);
+}
+
+/** Decode a weapon's parts from a stored/broadcast packed array (else defaults). */
+export function decodeWeaponParts(weaponId: string, packed?: number[] | null): ResolvedPart[] {
+  return weaponParts(weaponId).map((d, i) => {
+    const n = packed?.[i];
+    if (n == null || !Number.isFinite(n)) return { key: d.key, color: d.color, finish: d.finish };
+    const finish = (n >>> 24) & 0x3f;
+    return { key: d.key, color: n & 0xffffff, finish: finish < FINISHES.length ? finish : d.finish };
+  });
+}
+
+/** This client's own saved parts for a weapon (Locker edits, else defaults). */
+export function resolveWeaponParts(weaponId: string): ResolvedPart[] {
+  return decodeWeaponParts(weaponId, loadLocker().skins[weaponId]);
+}
+
+export interface SkinPreset { id: string; label: string; base: number; accent: number; finish: number; }
+
+/** One-click themes — set the structural parts to `base`+`finish` and the
+ * accent/energy parts to `accent`+neon. */
+export const SKIN_PRESETS: SkinPreset[] = [
+  { id: "carbon",  label: "Carbon",  base: 0x14161d, accent: 0x18e0ff, finish: 1 },
+  { id: "gold",    label: "Gold",    base: 0xc8a23a, accent: 0xffe07a, finish: 2 },
+  { id: "crimson", label: "Crimson", base: 0x6a1822, accent: 0xff5d6e, finish: 0 },
+  { id: "toxic",   label: "Toxic",   base: 0x2c4a18, accent: 0xb6ff3b, finish: 1 },
+  { id: "void",    label: "Void",    base: 0x2a1648, accent: 0xc78bff, finish: 2 },
+  { id: "ice",     label: "Ice",     base: 0x5a7a8a, accent: 0xeaffff, finish: 2 },
+];
+
+/** Apply a preset to a weapon → packed parts array (accent/energy parts glow). */
+export function presetParts(weaponId: string, preset: SkinPreset): number[] {
+  return weaponParts(weaponId).map((d) => {
+    const isAccent = /accent|core|edge|lens/.test(d.key);
+    return packPart(isAccent ? preset.accent : preset.base, isAccent ? 4 : preset.finish);
+  });
+}
+
+/** Build the THREE material for a resolved part (its colour + finish look). */
+export function partMaterial(p: ResolvedPart): THREE.MeshStandardMaterial {
+  const f = FINISHES[p.finish] ?? FINISHES[DEFAULT_FINISH];
+  return new THREE.MeshStandardMaterial({
+    color: p.color,
+    emissive: f.emissive > 0 ? p.color : 0x000000,
+    emissiveIntensity: f.emissive,
+    metalness: f.metalness,
+    roughness: f.roughness,
+    transparent: f.opacity != null,
+    opacity: f.opacity ?? 1,
+  });
+}
+
 export interface Accessory {
   label: string;
   /** Build the worn mesh (positioned relative to the avatar's feet at y=0).
