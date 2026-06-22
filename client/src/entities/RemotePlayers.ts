@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { MOVE, lerp, lerpAngle, type PlayerState } from "@drunkr/shared";
-import { arrToSkin, WEAPON_SKINS, ACCESSORIES } from "../render/cosmetics.js";
-import { buildWeaponMesh } from "../render/weaponMesh.js";
+import { decodeWeaponParts, ACCESSORIES } from "../render/cosmetics.js";
+import { buildViewModel } from "../render/viewModelMesh.js";
 
 /** Render this many milliseconds behind the latest snapshot for smooth interp.
  * ~2.5 snapshot intervals at 33 Hz — enough to absorb jitter without much lag. */
@@ -183,8 +183,11 @@ class Remote {
         if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); }
       });
     }
-    const { group: g, muzzle } = buildWeaponMesh(id, arrToSkin(this.wepPalette) ?? WEAPON_SKINS.default);
-    this.muzzleMarker = muzzle;
+    const { group: g, muzzleZ } = buildViewModel(id, decodeWeaponParts(id, this.wepPalette));
+    const marker = new THREE.Object3D();
+    marker.position.set(0, 0, muzzleZ);
+    g.add(marker);
+    this.muzzleMarker = marker;
     this.weaponMesh = g;
     this.hand.add(g);
   }
