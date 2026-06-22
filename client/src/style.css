@@ -1493,6 +1493,7 @@ body {
 }
 .ap-prow {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 0.4rem;
@@ -1501,7 +1502,10 @@ body {
   border-radius: 5px;
   padding: 0.3rem 0.45rem;
 }
-.ap-pname { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 0.3rem; }
+/* flex:1 1 8rem + min-width keep the name from collapsing to 0 (overflow:hidden
+   gives a flex item an auto min-size of 0); when the action buttons no longer
+   fit alongside it the row wraps them onto the next line instead of clipping. */
+.ap-pname { flex: 1 1 8rem; min-width: 8rem; font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 0.3rem; }
 .ap-pname em { color: #6f80a0; font-style: normal; font-size: 0.72rem; }
 .ap-pname .ap-admin-mark { color: #ffd23b; text-shadow: 0 0 6px #ffd23b88; font-size: 0.8rem; }
 .ap-pacts { display: flex; gap: 0.25rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
