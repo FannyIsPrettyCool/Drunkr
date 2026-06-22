@@ -90,6 +90,7 @@ class Editor {
   // transform state
   private mode: Mode = "translate";
   private anchored = false; // scale grows symmetrically from the center (both ends)
+  private shiftDown = false; // hold Shift while scaling → uniform on all axes
   private snap = true;
   private snapSize = 1;
   private drag: {
@@ -398,6 +399,12 @@ class Editor {
       if (o.size) {
         const geo = obj.geometry as THREE.BoxGeometry;
         const base = this.drag?.pSize ?? { x: geo.parameters?.width ?? o.size.x, y: geo.parameters?.height ?? o.size.y, z: geo.parameters?.depth ?? o.size.z };
+        // Hold Shift while scaling → uniform on all axes (whichever handle you drag).
+        if (this.mode === "scale" && this.shiftDown) {
+          const sc = [obj.scale.x, obj.scale.y, obj.scale.z];
+          const f = sc.reduce((a, b) => (Math.abs(b - 1) > Math.abs(a - 1) ? b : a), 1);
+          obj.scale.set(f, f, f);
+        }
         o.size.x = Math.max(0.1, r2(base.x * obj.scale.x));
         o.size.y = Math.max(0.1, r2(base.y * obj.scale.y));
         o.size.z = Math.max(0.1, r2(base.z * obj.scale.z));
@@ -741,6 +748,16 @@ class Editor {
     this.showProps();
   }
 
+  /** Select every object in the scene (Ctrl+A). */
+  private selectAll() {
+    const types: SelType[] = ["box", "pad", "ramp", "light", "emitter", "hazard", "platform", "spawn"];
+    this.selection = types.flatMap((t) => this.listOf(t).map((_, index) => ({ type: t, index })));
+    this.refreshHighlight();
+    this.attachGizmo();
+    this.refreshList();
+    this.showProps();
+  }
+
   private focusSelection() {
     const p = this.selectedPicks().pop();
     if (!p) return;
@@ -935,6 +952,10 @@ class Editor {
       grid.appendChild(btn);
     }
 
+    // Track Shift globally so a scale drag can read it for uniform scaling.
+    addEventListener("keydown", (e) => { if (e.key === "Shift") this.shiftDown = true; });
+    addEventListener("keyup", (e) => { if (e.key === "Shift") this.shiftDown = false; });
+
     window.addEventListener("keydown", (e) => {
       const typing = document.activeElement && ["INPUT", "SELECT", "TEXTAREA"].includes((document.activeElement as HTMLElement).tagName);
       if (typing) return; // let inputs handle their own keys (incl. native ctrl-z)
@@ -942,6 +963,8 @@ class Editor {
       if (ctrl && e.code === "KeyZ") { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); return; }
       if (ctrl && e.code === "KeyY") { e.preventDefault(); this.redo(); return; }
       if (ctrl && e.code === "KeyD") { e.preventDefault(); this.duplicate(); return; }
+      if (ctrl && e.code === "KeyA") { e.preventDefault(); this.selectAll(); return; }
+      if (e.code === "Escape") { this.select(null); return; }
       if (e.key === "Delete" || e.key === "Backspace") this.del();
       if (e.code === "KeyW") this.setMode("translate");
       if (e.code === "KeyE") this.setMode("rotate");

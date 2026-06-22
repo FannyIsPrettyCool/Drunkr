@@ -38,7 +38,7 @@ import { LocalPlayer } from "../entities/LocalPlayer.js";
 import { RemotePlayers } from "../entities/RemotePlayers.js";
 import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
-import { HUD } from "../ui/HUD.js";
+import { HUD, killBrag } from "../ui/HUD.js";
 import { AdminPanel } from "../ui/AdminPanel.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
@@ -410,7 +410,7 @@ export class Game {
         const killer = this.roster.get(msg.killer)?.name ?? "?";
         const victim = this.roster.get(msg.victim)?.name ?? "?";
         const assistNames = (msg.assists ?? []).map((id) => this.roster.get(id)?.name ?? "?");
-        this.hud.addKill(killer, victim, msg.head, assistNames, msg.multi ?? 1);
+        this.hud.addKill(killer, victim, msg.head, assistNames, msg.multi ?? 1, !!msg.noscope, !!msg.airborne, msg.cause);
         // Death dissolve in the victim's hue (skip the local player — no avatar).
         if (msg.victim !== this.localId) {
           const vp = this.remotes.position(msg.victim);
@@ -419,7 +419,7 @@ export class Game {
         }
         if (msg.killer === this.localId && msg.victim !== this.localId) {
           this.sfx.kill();
-          this.hud.killConfirm(`killed ${victim}`, "kill");
+          this.hud.killConfirm(killBrag(victim, msg.noscope, msg.airborne), "kill");
           if ((msg.multi ?? 1) >= 2) this.hud.multiKill(msg.multi!);
           // Kill reward: refill the magazine of the weapon we're holding. The
           // +25 HP refund is applied server-side and arrives via the snapshot.
@@ -431,8 +431,8 @@ export class Game {
           this.local.dead = true;
           this.resetAbilityCooldowns();
           this.hud.setDead(true);
-          const fell = msg.killer === msg.victim;
-          this.hud.setDeathInfo(fell ? null : killer, msg.head, fell);
+          const selfDeath = msg.killer === msg.victim;
+          this.hud.setDeathInfo(selfDeath ? null : killer, msg.head, msg.cause, msg.noscope, msg.airborne);
           this.protectActive = false;
           this.shockwavePending = false;
           this.hud.setProtected(false);

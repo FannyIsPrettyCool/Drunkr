@@ -144,6 +144,10 @@ export interface C_Shoot {
   dirs: Vec3[];
   /** Melee swing (short range, no bullet tracer on remotes). */
   melee?: boolean;
+  /** Aiming down sights when this shot was fired (a sniper hit without it is a no-scope). */
+  ads?: boolean;
+  /** Off the ground when this shot was fired (for airborne-kill flair). */
+  airborne?: boolean;
   /**
    * Server-clock time (ms) the client rendered the world it shot at. The server
    * rewinds targets to this instant (lag compensation) so hits land where the
@@ -305,6 +309,12 @@ export interface S_Kill {
   at?: Vec3;
   /** The killer's multikill count for this kill within the combo window (>=1). */
   multi?: number;
+  /** Sniper kill landed without aiming down sights. */
+  noscope?: boolean;
+  /** Killer was airborne when the lethal shot landed. */
+  airborne?: boolean;
+  /** Environmental death (killer === victim): how they died. */
+  cause?: "void" | "hazard";
 }
 
 /** Latency probe: the server asks the client to echo `ts` back in a C_Pong. */

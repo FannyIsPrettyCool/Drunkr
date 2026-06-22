@@ -154,13 +154,20 @@ export class HUD {
   }
 
   /** Who/what killed the local player, shown on the elimination overlay. */
-  setDeathInfo(killerName: string | null, head: boolean, fell: boolean) {
-    if (fell || !killerName) {
-      this.deathBy.textContent = "fell into the void";
+  setDeathInfo(
+    killerName: string | null, head: boolean,
+    cause?: "void" | "hazard", noscope?: boolean, airborne?: boolean,
+  ) {
+    if (cause === "void" || (!killerName && !cause)) {
+      this.deathBy.textContent = rand(VOID_MSGS);
+    } else if (cause === "hazard") {
+      this.deathBy.textContent = rand(HAZARD_MSGS);
     } else {
+      const verb = head ? '<span class="db-head">✜ headshotted</span> by' : `${rand(KILL_VERBS)} by`;
       this.deathBy.innerHTML =
-        `${head ? '<span class="db-head">✜ headshot</span> by ' : "killed by "}` +
-        `<span class="db-killer">${esc(killerName)}</span>`;
+        `${verb} <span class="db-killer">${esc(killerName!)}</span>` +
+        `${noscope ? " " + NOSCOPE_ICON : ""}${airborne ? " " + AIRBORNE_ICON : ""}` +
+        `<span class="db-tags">${styleSuffix(noscope, airborne)}</span>`;
     }
     this.deathBy.classList.remove("hidden");
   }
@@ -180,16 +187,30 @@ export class HUD {
     this.crosshair.style.opacity = active ? "0" : "1";
   }
 
-  addKill(killerName: string, victimName: string, head: boolean, assistNames: string[] = [], multi = 1) {
+  addKill(
+    killerName: string, victimName: string, head: boolean, assistNames: string[] = [], multi = 1,
+    noscope = false, airborne = false, cause?: "void" | "hazard",
+  ) {
     const row = document.createElement("div");
     row.className = "row";
+    // Environmental death (no killer): just the victim + how they went out.
+    if (cause) {
+      row.innerHTML =
+        `<span class="verb">${cause === "void" ? "↡" : "✸"}</span>` +
+        `<span class="victim">${esc(victimName)} ${cause === "void" ? rand(VOID_MSGS) : rand(HAZARD_MSGS)}</span>`;
+      this.killfeed.prepend(row);
+      while (this.killfeed.children.length > 5) this.killfeed.lastChild!.remove();
+      setTimeout(() => row.remove(), 5000);
+      return;
+    }
     const assist = assistNames.length
       ? `<span class="assist">+${assistNames.map(esc).join(", ")}</span>`
       : "";
     const badge = multi >= 2 ? `<span class="mk-badge">${multiKillName(multi)}</span>` : "";
+    const icons = `${noscope ? NOSCOPE_ICON : ""}${airborne ? AIRBORNE_ICON : ""}`;
     row.innerHTML =
       `<span class="killer">${esc(killerName)}</span>` +
-      `<span class="verb">${head ? '✜' : '»'}</span>` +
+      `<span class="verb">${head ? '✜' : '»'}</span>` + icons +
       `<span class="victim">${esc(victimName)}</span>` + assist + badge;
     if (head) row.querySelector(".verb")!.classList.add("head");
     this.killfeed.prepend(row);
@@ -288,6 +309,39 @@ export class HUD {
 
 function esc(s: string): string {
   return s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!));
+}
+
+// --- Fun death flavor (dumb gen-z humor) -----------------------------------
+const KILL_VERBS = [
+  "slimed", "yeeted", "deleted", "disintegrated", "clapped", "vaporized",
+  "unalived", "fragged", "bonked", "cooked", "ratio'd", "obliterated",
+  "atomized", "folded", "ended", "no-capped on", "speedran past", "GG'd",
+  "sent to the shadow realm", "touched grass on", "left on read",
+];
+const VOID_MSGS = [
+  "fell into the void", "yeeted themselves off the map", "rage quit gravity",
+  "touched the abyss", "found out the floor was lava (it was void)",
+  "took the big L off the edge", "speedran the respawn screen",
+];
+const HAZARD_MSGS = [
+  "got cooked by the hazard", "stood in the bad place", "melted (skill issue)",
+  "speedran death by hazard", "found out that REALLY hurts", "got that crispy aura",
+];
+/** Glyph icons that stack onto a kill (no-scope reticle, airborne up-triangle). */
+const NOSCOPE_ICON = `<span class="kf-icon" title="No-scope">⌖</span>`;
+const AIRBORNE_ICON = `<span class="kf-icon" title="Airborne">⏶</span>`;
+const rand = <T>(a: T[]): T => a[Math.floor(Math.random() * a.length)];
+/** A " · no-scope · mid-air" style suffix for personal kill confirms / death. */
+function styleSuffix(noscope?: boolean, airborne?: boolean): string {
+  const tags: string[] = [];
+  if (noscope) tags.push("no-scope");
+  if (airborne) tags.push("mid-air");
+  return tags.length ? ` (${tags.join(" + ")})` : "";
+}
+
+/** A fun "verb NAME" phrase for a kill the local player got, with flair. */
+export function killBrag(victim: string, noscope?: boolean, airborne?: boolean): string {
+  return `${rand(KILL_VERBS)} ${victim}${styleSuffix(noscope, airborne)}`;
 }
 
 /** Announcement label for a multikill count. */

@@ -440,6 +440,8 @@ export class Weapon {
       origin: { x: origin.x, y: origin.y, z: origin.z },
       dirs,
       melee: this.def.melee,
+      ads: this.ads,
+      airborne: !this.local.grounded,
       // The instant (server clock) the targets were rendered at, for lag comp.
       clientTime: this.remotes.renderTimeServer(),
     });

@@ -577,6 +577,7 @@ body {
 #killfeed .victim { color: var(--neon-pink); }
 #killfeed .verb { opacity: 0.5; margin: 0 0.4rem; }
 #killfeed .head { color: #ffd33d; }
+.kf-icon { margin: 0 0.15rem; font-size: 0.9em; filter: drop-shadow(0 0 4px #18e0ff88); }
 
 #hitmarker {
   position: absolute;
@@ -644,6 +645,7 @@ body {
 #death-by.hidden { display: none; }
 #death-by .db-killer { color: var(--neon-pink); font-weight: 700; }
 #death-by .db-head { color: var(--neon-cyan); }
+#death-by .db-tags { opacity: 0.6; font-size: 0.85em; }
 
 #banner {
   position: absolute;

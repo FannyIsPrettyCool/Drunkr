@@ -619,8 +619,12 @@ function handleShoot(
   dirs: Vec3[],
   melee: boolean,
   clientTime?: number,
+  ads = false,
+  airborne = false,
 ) {
   const w = weaponOf(shooter);
+  // No-scope = a sniper hit landed without aiming down sights.
+  const noscope = !melee && w.id === "sniper" && !ads;
   // Anti-cheat: the muzzle must be near the shooter's actual eye position so a
   // client can't fire rays from across the map.
   const e = eye(shooter.state);
@@ -666,7 +670,7 @@ function handleShoot(
     }
     if (bestId >= 0) {
       const at = { x: origin.x + d.x * bestDist, y: origin.y + d.y * bestDist, z: origin.z + d.z * bestDist };
-      applyDamage(room, shooter, room.actors.get(bestId)!, bestHead, { from: origin, at });
+      applyDamage(room, shooter, room.actors.get(bestId)!, bestHead, { from: origin, at, noscope, airborne });
       landed = true; landedHead = landedHead || bestHead;
     }
   }
@@ -922,12 +926,17 @@ function explodeGrenade(room: Room, p: Projectile) {
   }
 }
 
-function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
+type Shot = { from: Vec3; at: Vec3; noscope?: boolean; airborne?: boolean };
+
+function applyDamage(room: Room, attacker: Actor, victim: Actor, head: boolean, shot?: Shot) {
   const w = weaponOf(attacker);
   dealDamage(room, attacker, victim, Math.round(w.damage * (head ? w.headshotMul : 1)), head, shot);
 }
 
-function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean, shot?: { from: Vec3; at: Vec3 }) {
+function dealDamage(
+  room: Room, attacker: Actor, victim: Actor, dmg: number, head: boolean,
+  shot?: Shot, cause?: "void" | "hazard",
+) {
   if (victim.state.dead) return;
   // Admin godmode: the target shrugs off all damage.
   if (victim.god) return;
@@ -1002,6 +1011,9 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
       ...(assisters.length ? { assists: assisters } : {}),
       ...(shot ? { from: shot.from, at: shot.at } : {}),
       ...(multi > 1 ? { multi } : {}),
+      ...(shot?.noscope ? { noscope: true } : {}),
+      ...(shot?.airborne ? { airborne: true } : {}),
+      ...(cause ? { cause } : {}),
     });
     if (room.mode !== "bomb") {
       setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
@@ -1629,7 +1641,7 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
       bot.state.dead = true;
       bot.state.health = 0;
       bot.state.deaths++;
-      broadcast(room, { t: "kill", killer: bot.id, victim: bot.id, head: false });
+      broadcast(room, { t: "kill", killer: bot.id, victim: bot.id, head: false, cause: "void" });
     } else {
       respawn(room, bot);
     }
@@ -2128,7 +2140,7 @@ wss.on("connection", (ws) => {
         actor.nextShot = now + cycle;
         const maxDirs = Math.max(1, w.pellets ?? 1);
         const dirs = msg.dirs.filter(validVec).slice(0, maxDirs);
-        handleShoot(room, actor, msg.origin, dirs, !!msg.melee, msg.clientTime);
+        handleShoot(room, actor, msg.origin, dirs, !!msg.melee, msg.clientTime, !!msg.ads, !!msg.airborne);
         break;
       }
       case "respawn":
@@ -2141,7 +2153,7 @@ wss.on("connection", (ws) => {
           self.state.dead = true;
           self.state.health = 0;
           self.state.deaths++;
-          broadcast(rm, { t: "kill", killer: self.id, victim: self.id, head: false });
+          broadcast(rm, { t: "kill", killer: self.id, victim: self.id, head: false, cause: "void" });
           // In bomb mode you stay dead until the next round (no mid-round respawn).
           if (rm.mode !== "bomb") setTimeout(() => respawn(rm, self), PLAYER.respawnDelayMs);
         }
@@ -2264,7 +2276,7 @@ function applyHazards(room: Room, dt: number) {
     const whole = Math.floor(a.hazardAccum);
     if (whole <= 0) continue;
     a.hazardAccum -= whole;
-    dealDamage(room, a, a, whole, false); // environmental self-damage (handles death/respawn)
+    dealDamage(room, a, a, whole, false, undefined, "hazard"); // environmental self-damage (handles death/respawn)
   }
 }
 
