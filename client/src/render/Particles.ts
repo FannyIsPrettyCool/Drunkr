@@ -328,6 +328,26 @@ export class Particles {
     this.rings.emit(p.x, p.y, p.z, hueHex, 0.4, 3, 0.4);
   }
 
+  /** Decoy burst: directional cone of sparks in the decoy's hue, facing towardYaw. */
+  decoyBurst(p: { x: number; y: number; z: number }, towardYaw: number, hueHex: number) {
+    const c = TMP.setHex(hueHex), white = TMP2.setHex(0xffffff);
+    const fx = Math.sin(towardYaw), fz = Math.cos(towardYaw);
+    // Tight forward cone sparks (like muzzle flash but wider + hue-tinted).
+    for (let i = 0; i < 40; i++) {
+      const spread = (Math.random() - 0.5) * 0.9;
+      const sp = rnd(8, 18);
+      const rx = fx + (Math.random() - 0.5) * spread, rz = fz + (Math.random() - 0.5) * spread;
+      this.spark.spawn(p.x, p.y + 0.9, p.z, rx * sp, rnd(-1, 3), rz * sp, rnd(0.3, 0.6), 0.45, 0.03, white, c, 12, 1.8, NaN, 0);
+    }
+    // Wide radial burst (omnidirectional secondary).
+    for (let i = 0; i < 20; i++) {
+      const ang = Math.random() * Math.PI * 2, sp = rnd(4, 10);
+      this.spark.spawn(p.x, p.y + 0.9, p.z, Math.cos(ang) * sp, rnd(1, 6), Math.sin(ang) * sp, rnd(0.4, 0.7), 0.35, 0.04, c, TMP2.setHex(hueHex).multiplyScalar(0.3), 8, 1.2, NaN, 0);
+    }
+    this.rings.emit(p.x, p.y + 0.9, p.z, hueHex, 0.5, 5, 0.5);
+    this.rings.emit(p.x, p.y + 0.9, p.z, 0xffffff, 0.6, 3, 0.35);
+  }
+
   /** Grenade explosion / flash / siphon — a layered burst + AoE ring. */
   explosion(p: { x: number; y: number; z: number }, kind: "frag" | "flash" | "siphon", radius: number) {
     if (kind === "flash") {

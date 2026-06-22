@@ -56,6 +56,8 @@ export interface DecoyState {
   id: number;
   pos: Vec3;
   hue: number;
+  /** Facing direction in radians (yaw). */
+  yaw: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +349,16 @@ export interface S_ForceWeapon {
   weapon: string;
 }
 
+/** A Mirage decoy was destroyed — clients play the burst animation. */
+export interface S_DecoyBurst {
+  t: "decoy_burst";
+  id: number;
+  pos: Vec3;
+  /** Yaw (rad) the decoy turns to face before exploding — toward the shooter. */
+  towardYaw: number;
+  hue: number;
+}
+
 /** A grenade detonated — clients spawn effects and may get blinded. */
 export interface S_Explosion {
   t: "explosion";
@@ -471,6 +483,7 @@ export type ServerMessage =
   | S_VoteUpdate
   | S_MatchRestart
   | S_ForceWeapon
+  | S_DecoyBurst
   | S_Explosion
   | S_BombRoundStart
   | S_BombEvent

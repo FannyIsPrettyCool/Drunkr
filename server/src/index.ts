@@ -253,6 +253,7 @@ interface Decoy {
   pos: Vec3;
   vel: Vec3;
   hue: number;
+  yaw: number;
   expireAt: number;
 }
 
@@ -675,6 +676,22 @@ function handleShoot(
     }
   }
 
+  // Decoy hit detection: check each ray against live decoy hitboxes.
+  outer: for (let di = room.decoys.length - 1; di >= 0; di--) {
+    const d = room.decoys[di];
+    for (const nd of norm) {
+      const res = rayHitsPlayer(origin, nd, d.pos);
+      if (!res.hit || res.dist >= w.range) continue;
+      const aim = { x: origin.x + nd.x * res.dist, y: origin.y + nd.y * res.dist, z: origin.z + nd.z * res.dist };
+      if (room.world.segmentBlocked(origin, aim)) continue;
+      const dx = origin.x - d.pos.x, dz = origin.z - d.pos.z;
+      const towardYaw = Math.atan2(dx, dz);
+      broadcast(room, { t: "decoy_burst", id: d.id, pos: d.pos, towardYaw, hue: d.hue });
+      room.decoys.splice(di, 1);
+      break outer;
+    }
+  }
+
   // Accuracy stats (per trigger-pull; melee weapons are excluded as they
   // always "hit" at point blank and would skew the number).
   if (!melee && !w.melee) {
@@ -844,6 +861,7 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
       pos: { x: actor.state.pos.x, y: actor.state.pos.y, z: actor.state.pos.z },
       vel: { x: (dd.x / len) * DECOY.speed, y: 0, z: (dd.z / len) * DECOY.speed },
       hue: actor.state.hue,
+      yaw: Math.atan2(dd.x / len, dd.z / len),
       expireAt: now + DECOY.durationMs,
     });
   }
@@ -905,6 +923,8 @@ function updateDecoys(room: Room, now: number, dt: number) {
     if (!insideSolid(room, { x: nx, y: d.pos.y + 0.6, z: nz })) {
       d.pos.x = nx; d.pos.z = nz;
     } else { d.vel.x = 0; d.vel.z = 0; }
+    const hspd = Math.hypot(d.vel.x, d.vel.z);
+    if (hspd > 0.1) d.yaw = Math.atan2(d.vel.x, d.vel.z);
   }
 }
 
@@ -1809,9 +1829,12 @@ function handleAdmin(room: Room, actor: Actor, msg: C_Admin) {
     }
     case "bring": {
       const t = targetActor();
-      if (!t || t.id === actor.id) break;
-      if (t.ws) send(t.ws, { t: "teleport", pos: { ...actor.state.pos } });
-      else t.state.pos = { ...actor.state.pos };
+      if (!t || t.id === actor.id || t.state.dead) break;
+      const dest = { ...actor.state.pos };
+      // Update server-side pos immediately so snapshots reflect the new position.
+      t.state.pos = { ...dest };
+      if (t.ws) send(t.ws, { t: "teleport", pos: dest });
+      else t.vel = { x: 0, y: 0, z: 0 };
       adminToast(actor, `Brought ${t.state.name}`);
       break;
     }
@@ -1851,6 +1874,45 @@ function handleAdmin(room: Room, actor: Actor, msg: C_Admin) {
     case "announce": {
       const text = (msg.value ?? "").replace(/[<>&]/g, "").slice(0, 120);
       if (text) broadcast(room, { t: "toast", text, kind: "admin" });
+      break;
+    }
+    case "grant": {
+      const t = targetActor();
+      if (!t || t.ai || t.id === actor.id) break;
+      setAdmin(t, true);
+      adminToast(actor, `Granted admin to ${t.state.name}`);
+      break;
+    }
+    case "addbot":
+      spawnBot(room);
+      adminToast(actor, "Bot spawned");
+      break;
+    case "launch": {
+      const t = targetActor();
+      if (!t || t.state.dead) break;
+      applyKnockback(t, 0, 26, 0);
+      adminToast(actor, `Launched ${t.state.name}`);
+      break;
+    }
+    case "launchall":
+      for (const t of room.actors.values()) {
+        if (!t.state.dead) applyKnockback(t, 0, 26, 0);
+      }
+      adminToast(actor, "Everyone launched");
+      break;
+    case "freeze": {
+      const t = targetActor();
+      if (!t || t.state.dead) break;
+      if (t.ws) send(t.ws, { t: "slow", mul: 0, ms: 3000 });
+      else { t.vel.x = 0; t.vel.z = 0; }
+      adminToast(actor, `Froze ${t.state.name}`);
+      break;
+    }
+    case "revive": {
+      const t = targetActor();
+      if (!t || !t.state.dead) break;
+      respawn(room, t);
+      adminToast(actor, `Revived ${t.state.name}`);
       break;
     }
   }
@@ -2319,7 +2381,7 @@ setInterval(() => {
       a.state.invuln = !!(a.invulnUntil && time < a.invulnUntil);
     }
     const proj: ProjectileState[] = room.projectiles.map((p) => ({ id: p.id, kind: p.kind, pos: p.pos }));
-    const decoys: DecoyState[] = room.decoys.map((d) => ({ id: d.id, pos: d.pos, hue: d.hue }));
+    const decoys: DecoyState[] = room.decoys.map((d) => ({ id: d.id, pos: d.pos, hue: d.hue, yaw: d.yaw }));
     broadcast(room, {
       t: "snapshot",
       time,

@@ -100,7 +100,8 @@ export class Game {
   private abilityCd: Record<string, number> = {};
   /** Live grenade meshes by projectile id. */
   private projMeshes = new Map<number, THREE.Mesh>();
-  private decoyMeshes = new Map<number, THREE.Mesh>();
+  private decoyMeshes = new Map<number, THREE.Group>();
+  private decoyBursting = new Map<number, { group: THREE.Group; start: number; towardYaw: number; hue: number }>();
   private slowTimer = 0;
   private losRay = new THREE.Raycaster();
   private aimRaycaster = new THREE.Raycaster();
@@ -228,7 +229,6 @@ export class Game {
       send: (m) => this.net.send(m),
       roster: () => [...this.roster.values()],
       localId: this.localId,
-      maps: Object.entries(MAPS).filter(([id]) => id !== "dust2").map(([id, m]) => ({ id, name: m.name })),
       onClientToggle: (key, on) => {
         if (key === "noclip") this.local.noclip = on;
         else if (key === "fly") this.local.fly = on;
@@ -240,6 +240,15 @@ export class Game {
     window.addEventListener("keydown", (e) => {
       // Don't steal keys while typing into any input / select.
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.code === "Escape") {
+        if (this.adminPanel.open) { e.preventDefault(); this.closeAdmin(); return; }
+        if (!this.pauseMenu.classList.contains("hidden") && !this.local.dead) {
+          e.preventDefault();
+          this.hidePauseMenu();
+          this.renderer.renderer.domElement.requestPointerLock?.();
+          return;
+        }
+      }
       if (e.code === settings.keymap.chat && this.input.locked && !this.local.dead && !this.inIntermission) {
         e.preventDefault();
         this.openChat();
@@ -472,6 +481,15 @@ export class Game {
           this.hud.banner("WEAPON SCRAMBLED");
         }
         break;
+      case "decoy_burst": {
+        const existing = this.decoyMeshes.get(msg.id);
+        const group = existing ?? this.buildDecoyGroup(msg.hue);
+        if (!existing) this.renderer.scene.add(group);
+        this.decoyMeshes.delete(msg.id);
+        group.position.set(msg.pos.x, msg.pos.y, msg.pos.z);
+        this.decoyBursting.set(msg.id, { group, start: performance.now(), towardYaw: msg.towardYaw, hue: msg.hue });
+        break;
+      }
       case "explosion":
         this.onExplosion(msg.kind, new THREE.Vector3(msg.pos.x, msg.pos.y, msg.pos.z));
         break;
@@ -634,13 +652,19 @@ export class Game {
       this.local.setWorld(this.arena.collision);
     }
 
-    for (const mesh of [...this.projMeshes.values(), ...this.decoyMeshes.values()]) {
+    for (const mesh of this.projMeshes.values()) {
       this.renderer.scene.remove(mesh);
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
     }
+    const decoyGroups = [...this.decoyMeshes.values(), ...[...this.decoyBursting.values()].map(b => b.group)];
+    for (const group of decoyGroups) {
+      this.renderer.scene.remove(group);
+      group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+    }
     this.projMeshes.clear();
     this.decoyMeshes.clear();
+    this.decoyBursting.clear();
     this.particles.clear();
 
     this.roster.clear();
@@ -1047,29 +1071,62 @@ export class Game {
     return false;
   }
 
+  /** Build a static player-model group for a Mirage decoy. */
+  private buildDecoyGroup(hue: number): THREE.Group {
+    const col = new THREE.Color().setHSL(hue, 0.85, 0.55);
+    const emissive = col.clone().multiplyScalar(0.5);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: col, emissive, emissiveIntensity: 0.6, roughness: 0.5, metalness: 0.2 });
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x0a0c18, emissive: col, emissiveIntensity: 0.4 });
+    const visorMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const g = new THREE.Group();
+    // Torso
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.3), bodyMat);
+    torso.position.y = MOVE.height * 0.58;
+    g.add(torso);
+    // Head
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.34), headMat);
+    head.position.y = MOVE.height * 0.9;
+    g.add(head);
+    // Visor
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.04), visorMat);
+    visor.position.set(0, MOVE.height * 0.9, 0.18);
+    g.add(visor);
+    // Legs
+    const legGeo = new THREE.BoxGeometry(0.2, 0.8, 0.24);
+    const legL = new THREE.Mesh(legGeo, bodyMat);
+    legL.position.set(-0.15, MOVE.height * 0.42 - 0.4, 0);
+    const legR = new THREE.Mesh(legGeo, bodyMat);
+    legR.position.set(0.15, MOVE.height * 0.42 - 0.4, 0);
+    g.add(legL, legR);
+    // Arms
+    const armGeo = new THREE.BoxGeometry(0.15, 0.5, 0.16);
+    const armL = new THREE.Mesh(armGeo, bodyMat);
+    armL.position.set(-0.34, MOVE.height * 0.64, 0);
+    const armR = new THREE.Mesh(armGeo, bodyMat);
+    armR.position.set(0.34, MOVE.height * 0.64, 0);
+    g.add(armL, armR);
+    return g;
+  }
+
   /** Reconcile rendered Mirage decoy holograms with the snapshot. */
   private syncDecoys(decoys: DecoyState[]) {
     const seen = new Set<number>();
     for (const d of decoys) {
       seen.add(d.id);
-      let mesh = this.decoyMeshes.get(d.id);
-      if (!mesh) {
-        const col = new THREE.Color().setHSL(d.hue, 0.85, 0.6);
-        mesh = new THREE.Mesh(
-          new THREE.CylinderGeometry(MOVE.radius, MOVE.radius, MOVE.height, 10),
-          new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.45, depthWrite: false }),
-        );
-        mesh.renderOrder = 4;
-        this.renderer.scene.add(mesh);
-        this.decoyMeshes.set(d.id, mesh);
+      if (this.decoyBursting.has(d.id)) continue; // mid-burst, don't re-create
+      let group = this.decoyMeshes.get(d.id);
+      if (!group) {
+        group = this.buildDecoyGroup(d.hue);
+        this.renderer.scene.add(group);
+        this.decoyMeshes.set(d.id, group);
       }
-      mesh.position.set(d.pos.x, d.pos.y + MOVE.height / 2, d.pos.z);
+      group.position.set(d.pos.x, d.pos.y, d.pos.z);
+      group.rotation.y = d.yaw;
     }
-    for (const [id, mesh] of this.decoyMeshes) {
-      if (!seen.has(id)) {
-        this.renderer.scene.remove(mesh);
-        mesh.geometry.dispose();
-        (mesh.material as THREE.Material).dispose();
+    for (const [id, group] of this.decoyMeshes) {
+      if (!seen.has(id) && !this.decoyBursting.has(id)) {
+        this.renderer.scene.remove(group);
+        group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
         this.decoyMeshes.delete(id);
       }
     }
@@ -1328,6 +1385,44 @@ export class Game {
       this.renderer.camera.position.z += (Math.random() - 0.5) * s;
     }
     this.particles.update(dt);
+
+    // Decoy burst animation: rotate decoy to face shooter over 200ms, then explode.
+    for (const [id, b] of this.decoyBursting) {
+      const elapsed = now - b.start;
+      if (elapsed < 200) {
+        // Lerp yaw toward towardYaw.
+        const t = elapsed / 200;
+        const dy = b.towardYaw - b.group.rotation.y;
+        const shortest = ((dy + Math.PI) % (Math.PI * 2)) - Math.PI;
+        b.group.rotation.y += shortest * Math.min(t, 1);
+      } else {
+        // Detonate.
+        const hueCol = new THREE.Color().setHSL(b.hue, 0.85, 0.55).getHex();
+        this.particles.decoyBurst({ x: b.group.position.x, y: b.group.position.y, z: b.group.position.z }, b.towardYaw, hueCol);
+        // Flash-blind local player if they're looking at the burst from within range.
+        if (!this.local.dead) {
+          const cam = new THREE.Vector3();
+          this.renderer.camera.getWorldPosition(cam);
+          const bpos = b.group.position;
+          const dist = cam.distanceTo(bpos);
+          if (dist < 10) {
+            const look = new THREE.Vector3();
+            this.renderer.camera.getWorldDirection(look);
+            const toFlash = bpos.clone().sub(cam).normalize();
+            const facing = look.dot(toFlash);
+            const cx = Math.sin(b.towardYaw), cz = Math.cos(b.towardYaw);
+            const inCone = new THREE.Vector3(cx, 0, cz).dot(look) > 0.3;
+            if (facing > 0.2 && inCone && !this.losBlocked(cam, bpos)) {
+              this.hud.blind(Math.round(800 * (1 - dist / 10) * facing));
+            }
+          }
+        }
+        this.renderer.scene.remove(b.group);
+        b.group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+        this.decoyBursting.delete(id);
+      }
+    }
+
     // Speed lines + speedometer scale with horizontal momentum (0 when dead).
     const hspeed = this.local.dead ? 0 : Math.hypot(this.local.vel.x, this.local.vel.z);
     this.speedLines.update(dt, hspeed);

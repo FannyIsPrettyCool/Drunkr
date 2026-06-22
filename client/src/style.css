@@ -1291,15 +1291,26 @@ body {
   box-shadow: 0 0 18px #18e0ff44;
 }
 #toast.admin {
-  top: 22%;
-  font-size: 1.3rem;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 1.8rem;
   font-weight: bold;
-  letter-spacing: 0.1rem;
+  letter-spacing: 0.18rem;
   color: #ffd23b;
-  border-color: #ffd23b;
+  border-color: #ffd23b99;
+  border-width: 2px;
   text-transform: uppercase;
-  text-shadow: 0 0 18px #ffd23b88;
-  box-shadow: 0 0 26px #ffd23b44;
+  text-shadow: 0 0 24px #ffd23b, 0 0 60px #ffd23b88;
+  box-shadow: 0 0 40px #ffd23b55, inset 0 0 24px #ffd23b11;
+  background: linear-gradient(180deg, #181000ee, #0c0900ee);
+  padding: 0.7rem 2.2rem;
+  border-radius: 10px;
+  animation: ap-grand-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ap-grand-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-18px) scale(0.9); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 #toast.hidden { display: none; }
 
@@ -1329,7 +1340,7 @@ body {
 }
 #admin-panel.hidden { display: none; }
 .ap-card {
-  width: min(960px, 94vw);
+  width: min(820px, 94vw);
   max-height: 88vh;
   overflow-y: auto;
   background: linear-gradient(180deg, #0b0e1aee, #070912ee);
@@ -1343,12 +1354,14 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 1.3rem;
-  font-weight: bold;
-  letter-spacing: 0.12rem;
-  color: var(--neon-pink);
-  text-shadow: 0 0 14px #ff2d9b66;
   margin-bottom: 0.7rem;
+}
+.ap-title {
+  font-size: 1.5rem;
+  font-weight: bold;
+  letter-spacing: 0.2rem;
+  color: var(--neon-pink);
+  text-shadow: 0 0 20px #ff2d9b99, 0 0 40px #ff2d9b44;
 }
 .ap-close {
   background: transparent;
@@ -1362,7 +1375,7 @@ body {
 .ap-close:hover { border-color: var(--neon-pink); }
 .ap-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.1fr;
+  grid-template-columns: 1fr 1.4fr;
   gap: 1rem;
 }
 .ap-col h4 {
@@ -1440,10 +1453,19 @@ body {
   border-radius: 5px;
   padding: 0.3rem 0.45rem;
 }
-.ap-pname { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-pname { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 0.3rem; }
 .ap-pname em { color: #6f80a0; font-style: normal; font-size: 0.72rem; }
-.ap-pacts { display: flex; gap: 0.25rem; flex-shrink: 0; }
+.ap-pname .ap-admin-mark { color: #ffd23b; text-shadow: 0 0 6px #ffd23b88; font-size: 0.8rem; }
+.ap-pacts { display: flex; gap: 0.25rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .ap-pacts button { padding: 0.2rem 0.4rem; font-size: 0.72rem; }
+.ap-pacts button.grant { border-color: #ffd23b55; color: #ffd23b; }
+.ap-pacts button.grant:hover { border-color: #ffd23b; background: #1c1800; }
+.ap-pacts button[disabled] { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+.ap-prow.dead { opacity: 0.6; }
+.ap-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ap-dot.alive { background: #18e0ff; box-shadow: 0 0 5px #18e0ff; }
+.ap-dot.dead { background: #ff3b5b; box-shadow: 0 0 5px #ff3b5b; }
+.ap-pcount { color: #6f80a0; font-weight: normal; letter-spacing: 0; font-size: 0.75rem; }
 .ap-empty { color: #6f80a0; font-size: 0.8rem; }
 .ap-hint {
   margin-top: 0.7rem;
