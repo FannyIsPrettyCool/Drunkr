@@ -41,6 +41,8 @@ import { DecoyAvatar } from "../entities/Decoy.js";
 import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
 import { HUD, killBrag } from "../ui/HUD.js";
+import { DamageNumbers } from "../ui/DamageNumbers.js";
+import { Minimap, type MinimapEnemy } from "../ui/Minimap.js";
 import { AdminPanel } from "../ui/AdminPanel.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
@@ -83,6 +85,10 @@ export class Game {
   private suppressPauseUntil = 0;
   private settingsPanel!: SettingsPanel;
   private locker = new Locker();
+  private damageNumbers = new DamageNumbers();
+  private minimap = new Minimap();
+  /** Throttle for the radar's per-frame visibility raycasts (~30 Hz). */
+  private lastMinimap = 0;
 
   private chatOpen = false;
   private chatBar = document.getElementById("chat-bar")!;
@@ -169,6 +175,7 @@ export class Game {
     this.particles = new Particles(this.renderer.scene, this.renderer.renderHeight);
     this.arena = new Arena(map);
     this.renderer.scene.add(this.arena.group);
+    this.minimap.setMap(map);
 
     this.remotes = new RemotePlayers(this.renderer.scene, () => this.localId);
     this.local = new LocalPlayer(this.renderer.camera, this.arena.collision);
@@ -188,6 +195,7 @@ export class Game {
       {
         onAmmo: (cur, max) => this.hud.setAmmo(cur, max),
         onHit: (head) => { this.hud.hitmark(head); this.sfx.hit(head); },
+        onDamage: (x, y, z, amount, head) => this.damageNumbers.spawn(x, y, z, amount, head),
         onReloadState: (active, progress) => {
           this.hud.setReload(active, progress);
           if (!active) {
@@ -665,7 +673,9 @@ export class Game {
       this.renderer.scene.add(this.arena.group);
       this.weapon.setColliders(this.arena.colliders);
       this.local.setWorld(this.arena.collision);
+      this.minimap.setMap(map);
     }
+    this.damageNumbers.clear();
 
     for (const mesh of this.projMeshes.values()) {
       this.renderer.scene.remove(mesh);
@@ -1502,9 +1512,42 @@ export class Game {
     }
 
     // The Locker is a full-screen overlay with its own (now lightweight) 3D
-    // previews — don't also render the fully-occluded game scene underneath it.
-    if (!this.locker.isOpen()) this.renderer.render();
+    // previews — don't also render the fully-occluded game scene underneath it
+    // (nor the HUD overlays it covers).
+    if (!this.locker.isOpen()) {
+      this.renderer.render();
+      this.damageNumbers.update(this.renderer.camera);
+      // Radar visibility uses LOS raycasts, so resolve it at ~30 Hz, not 60.
+      if (now - this.lastMinimap >= 33) { this.lastMinimap = now; this.updateMinimap(now); }
+    }
     requestAnimationFrame(() => this.loop());
+  }
+
+  /** Resolve which enemies are currently in the player's sight and feed the radar. */
+  private updateMinimap(now: number) {
+    const cam = new THREE.Vector3();
+    this.renderer.camera.getWorldPosition(cam);
+    // Heading (yaw) forward in XZ — stable regardless of look pitch.
+    const fx = -Math.sin(this.local.yaw), fz = -Math.cos(this.local.yaw);
+    const coneCos = Math.cos((55 * Math.PI) / 180);
+    const sightRange = 90;
+    const chest = new THREE.Vector3();
+    const enemies: MinimapEnemy[] = [];
+    for (const [id, r] of this.remotes.all()) {
+      const p = r.group.position;
+      const dx = p.x - this.local.pos.x, dz = p.z - this.local.pos.z;
+      const dist = Math.hypot(dx, dz);
+      let visible = false;
+      if (r.group.visible && dist > 0.01 && dist <= sightRange) {
+        const facing = (fx * dx + fz * dz) / dist; // (fx,fz) is unit length
+        if (facing > coneCos) {
+          chest.set(p.x, p.y + MOVE.height * 0.6, p.z);
+          visible = !this.losBlocked(cam, chest);
+        }
+      }
+      enemies.push({ id, x: p.x, z: p.z, visible });
+    }
+    this.minimap.update(this.local.pos.x, this.local.pos.y, this.local.pos.z, this.local.yaw, enemies, now);
   }
 }
 

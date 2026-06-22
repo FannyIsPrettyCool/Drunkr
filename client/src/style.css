@@ -387,7 +387,8 @@ body {
 }
 #fps {
   position: absolute;
-  top: 0.9rem;
+  /* Tucked just under the top-left radar. */
+  top: 13.4rem;
   left: 1.2rem;
   font-size: 0.8rem;
   color: var(--neon-cyan);
@@ -395,7 +396,7 @@ body {
 }
 #ping {
   position: absolute;
-  top: 2.1rem;
+  top: 14.6rem;
   left: 1.2rem;
   font-size: 0.8rem;
   color: var(--neon-cyan);
@@ -616,6 +617,53 @@ body {
   transition: opacity 0.4s;
 }
 #damage-flash.show { opacity: 1; transition: opacity 0s; }
+
+/* Low-HP red vignette (opacity driven from HUD.setHealth). */
+#vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6;
+  background: radial-gradient(ellipse at 50% 50%, transparent 42%, #c4001e66 76%, #ff0033cc 100%);
+  transition: opacity 0.25s ease-out;
+}
+
+/* Floating combat damage numbers (positioned per-frame from world space). */
+#damage-numbers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 8;
+}
+.dmg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-weight: bold;
+  font-size: 1.15rem;
+  color: #fff;
+  text-shadow: 0 0 4px #000, 0 1px 2px #000;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+.dmg.head {
+  color: #ffd33d;
+  font-size: 1.5rem;
+  text-shadow: 0 0 7px #ff8a00, 0 0 3px #000, 0 1px 2px #000;
+}
+
+/* Top-left radar. The canvas clips itself to a circle, so corners are clear. */
+#minimap {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0.92;
+  filter: drop-shadow(0 0 6px #0008);
+}
 
 #respawn {
   position: absolute;

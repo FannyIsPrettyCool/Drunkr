@@ -22,6 +22,7 @@ export class HUD {
   private abilityC = document.getElementById("ability-c")!;
   private blindEl = document.getElementById("blind")!;
   private blindTimer = 0;
+  private vignetteEl = document.getElementById("vignette")!;
   private bannerEl = document.getElementById("banner")!;
   private bannerTimer = 0;
   private timerEl = document.getElementById("timer")!;
@@ -58,6 +59,12 @@ export class HUD {
     } else {
       this.overhealVal.classList.add("hidden");
     }
+    // Low-HP red vignette: fades in below 40 HP, strongest near death (0 when
+    // dead so it doesn't bleed under the elimination overlay).
+    const THRESH = 40;
+    const base = Math.min(100, total);
+    const intensity = base > 0 ? Math.max(0, (THRESH - base) / THRESH) : 0;
+    this.vignetteEl.style.opacity = (intensity * 0.9).toFixed(3);
   }
 
   setAmmo(cur: number, max: number) {
