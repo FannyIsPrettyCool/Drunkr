@@ -1,11 +1,16 @@
+import { settings } from "../core/Settings.js";
+
 /**
  * Keyboard + mouse input with pointer lock. Tracks held keys and accumulates
- * mouse-look deltas to be consumed once per frame.
+ * mouse-look deltas to be consumed once per frame. Key bindings are read live
+ * from `settings.keymap` so the rebind UI takes effect immediately.
  */
 export class Input {
   private keys = new Set<string>();
   private mouseDX = 0;
   private mouseDY = 0;
+  /** Accumulated wheel delta, converted into discrete notches. */
+  private wheelAccum = 0;
   locked = false;
 
   onShoot: (() => void) | null = null;
@@ -13,24 +18,35 @@ export class Input {
   onLockChange: ((locked: boolean) => void) | null = null;
   /** Weapon switch request by id. */
   onSwitch: ((weapon: string) => void) | null = null;
+  /** Scroll-wheel weapon cycle: +1 = next, -1 = previous. */
+  onCycle: ((dir: 1 | -1) => void) | null = null;
   /** Ability key (F = primary, C = secondary). */
   onAbility: ((slot: "F" | "C") => void) | null = null;
+  /** Inspect-weapon key (local cosmetic animation). */
+  onInspect: (() => void) | null = null;
 
   private mouseDown = false;
   private rightDown = false;
+
+  /** Live keymap binding for an action. */
+  private key(action: keyof typeof settings.keymap): string {
+    return settings.keymap[action];
+  }
 
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener("keydown", (e) => {
       this.keys.add(e.code);
       // Tab would focus the next DOM element and drop pointer lock — swallow it.
       if (e.code === "Tab") { e.preventDefault(); return; }
-      if (e.code === "KeyR") this.onReload?.();
-      if (e.code === "Digit1") this.onSwitch?.("ak");
-      if (e.code === "Digit2") this.onSwitch?.("sniper");
-      if (e.code === "Digit3") this.onSwitch?.("shotgun");
-      if (e.code === "KeyQ") this.onSwitch?.("katana");
-      if (e.code === "KeyF" && !e.repeat) this.onAbility?.("F");
-      if (e.code === "KeyC" && !e.repeat) this.onAbility?.("C");
+      const km = settings.keymap;
+      if (e.code === km.reload) this.onReload?.();
+      if (e.code === km.weapon1) this.onSwitch?.("ak");
+      if (e.code === km.weapon2) this.onSwitch?.("sniper");
+      if (e.code === km.weapon3) this.onSwitch?.("shotgun");
+      if (e.code === km.melee) this.onSwitch?.("katana");
+      if (e.code === km.abilityF && !e.repeat) this.onAbility?.("F");
+      if (e.code === km.abilityC && !e.repeat) this.onAbility?.("C");
+      if (e.code === km.inspect && !e.repeat) this.onInspect?.();
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.code));
 
@@ -65,6 +81,20 @@ export class Input {
       this.mouseDY += e.movementY;
     });
 
+    // Scroll wheel cycles weapons. Accumulate so trackpads (many tiny deltas)
+    // and notched wheels both produce one switch per "notch".
+    document.addEventListener("wheel", (e) => {
+      if (!this.locked) return;
+      e.preventDefault();
+      this.wheelAccum += e.deltaY;
+      const NOTCH = 40;
+      while (Math.abs(this.wheelAccum) >= NOTCH) {
+        const dir: 1 | -1 = this.wheelAccum > 0 ? 1 : -1;
+        this.wheelAccum -= dir * NOTCH;
+        this.onCycle?.(dir);
+      }
+    }, { passive: false });
+
     document.addEventListener("mousedown", (e) => {
       if (!this.locked) return;
       if (e.button === 0) this.mouseDown = true;
@@ -77,7 +107,10 @@ export class Input {
   }
 
   requestLock() {
-    this.canvas.requestPointerLock();
+    // unadjustedMovement bypasses OS pointer acceleration — without it Firefox
+    // applies acceleration to pointer-lock deltas, causing jitter vs Chromium.
+    this.canvas.requestPointerLock({ unadjustedMovement: true })
+      .catch(() => this.canvas.requestPointerLock());
   }
 
   isDown(code: string): boolean {
@@ -97,27 +130,28 @@ export class Input {
   moveAxis(): { x: number; z: number } {
     let x = 0;
     let z = 0;
-    if (this.isDown("KeyW")) z -= 1;
-    if (this.isDown("KeyS")) z += 1;
-    if (this.isDown("KeyA")) x -= 1;
-    if (this.isDown("KeyD")) x += 1;
+    if (this.isDown(this.key("moveForward"))) z -= 1;
+    if (this.isDown(this.key("moveBack"))) z += 1;
+    if (this.isDown(this.key("moveLeft"))) x -= 1;
+    if (this.isDown(this.key("moveRight"))) x += 1;
     return { x, z };
   }
 
   get jumping(): boolean {
-    return this.isDown("Space");
+    return this.isDown(this.key("jump"));
   }
 
   get crouching(): boolean {
-    return this.isDown("ShiftLeft") || this.isDown("ShiftRight");
+    // Honour the bound crouch key; still accept the other Shift for comfort.
+    return this.isDown(this.key("crouch")) || this.isDown("ShiftRight");
   }
 
   get useHeld(): boolean {
-    return this.isDown("KeyE");
+    return this.isDown(this.key("use"));
   }
 
   get showScores(): boolean {
-    return this.keys.has("CapsLock");
+    return this.keys.has(this.key("scoreboard"));
   }
 
   /** Returns and clears the accumulated mouse delta. */

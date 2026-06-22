@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { MOVE, lerp, lerpAngle, type PlayerState } from "@drunkr/shared";
+import { arrToSkin, WEAPON_SKINS, ACCESSORIES } from "../render/cosmetics.js";
+import { buildWeaponMesh } from "../render/weaponMesh.js";
 
 /** Render this many milliseconds behind the latest snapshot for smooth interp.
  * ~2.5 snapshot intervals at 33 Hz — enough to absorb jitter without much lag. */
@@ -28,8 +30,12 @@ class Remote {
   private bodyMat: THREE.MeshStandardMaterial;
   private color: THREE.Color;
   private weaponId = "";
+  private wepPalette?: number[];
+  private builtPaletteKey = "";
   private weaponMesh: THREE.Object3D | null = null;
   private muzzleMarker: THREE.Object3D | null = null;
+  private accessoryId = "";
+  private accessoryMesh: THREE.Object3D | null = null;
   /** Melee swing progress (1 = just swung, decays to 0). */
   private swingT = 0;
   private invis = false;
@@ -103,7 +109,9 @@ class Remote {
     this.hand.rotation.y = Math.PI; // weapon meshes point -Z; flip to face +Z
     this.weaponHold.add(this.hand);
 
+    this.wepPalette = state.wepPalette;
     this.setWeapon(state.weapon ?? "ak");
+    this.setAccessory(state.accessory ?? "none");
 
     this.label = this.makeLabel(state.name, this.color);
     this.group.add(this.label);
@@ -163,94 +171,41 @@ class Remote {
     return sprite;
   }
 
-  /** Build / swap the held weapon model. */
+  /** Build / swap the held weapon model (rebuilds on weapon OR skin change). */
   private setWeapon(id: string) {
-    if (id === this.weaponId) return;
+    const paletteKey = this.wepPalette ? this.wepPalette.join(",") : "";
+    if (id === this.weaponId && paletteKey === this.builtPaletteKey) return;
     this.weaponId = id;
+    this.builtPaletteKey = paletteKey;
     if (this.weaponMesh) {
       this.hand.remove(this.weaponMesh);
       this.weaponMesh.traverse((o) => {
         if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); }
       });
     }
-    const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x16182a, emissive: 0x18e0ff, emissiveIntensity: 0.4, metalness: 0.6, roughness: 0.4,
-    });
-    const accent = new THREE.MeshStandardMaterial({ color: 0xff2d9b, emissive: 0xff2d9b, emissiveIntensity: 0.9 });
-    const steel = new THREE.MeshStandardMaterial({ color: 0x39414f, metalness: 0.85, roughness: 0.3 });
-    const box = (w: number, h: number, d: number, m: THREE.Material, z: number, x = 0, y = 0) => {
-      const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
-      me.position.set(x, y, z);
-      g.add(me);
-      return me;
-    };
-    let muzzleZ = -0.95;
-    switch (id) {
-      case "sniper": {
-        box(0.065, 0.09, 0.46, mat, -0.4);              // receiver
-        box(0.03, 0.03, 0.5, steel, -0.95);             // long barrel
-        box(0.045, 0.045, 0.1, steel, -1.26);           // muzzle
-        box(0.05, 0.05, 0.32, mat, -0.46, 0, 0.12);     // scope tube
-        box(0.052, 0.052, 0.04, accent, -0.62, 0, 0.12); // front lens
-        box(0.045, 0.13, 0.07, mat, 0.02, 0, -0.12).rotation.x = 0.5; // grip
-        box(0.05, 0.07, 0.58, mat, 0.12);               // stock (bridges to receiver)
-        muzzleZ = -1.32;
-        break;
-      }
-      case "shotgun": {
-        box(0.1, 0.1, 0.28, mat, -0.2);                 // receiver
-        box(0.036, 0.036, 0.62, steel, -0.62, 0, 0.045);  // upper barrel
-        box(0.036, 0.036, 0.62, steel, -0.62, 0, -0.045); // lower barrel
-        box(0.09, 0.016, 0.42, accent, -0.62);          // neon rib
-        box(0.05, 0.13, 0.08, mat, 0.04, 0, -0.12).rotation.x = 0.4; // grip
-        box(0.07, 0.1, 0.48, mat, 0.16);                // stock (bridges to receiver)
-        muzzleZ = -0.95;
-        break;
-      }
-      case "katana": {
-        const steel = new THREE.MeshStandardMaterial({
-          color: 0xbfe6ff, emissive: 0x0c3b58, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
-        });
-        const edge = new THREE.MeshStandardMaterial({
-          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.7,
-        });
-        // Flat blade + glowing cutting edge.
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.09, 1.15), steel);
-        blade.position.set(0, 0.02, -0.62);
-        g.add(blade);
-        const cut = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.028, 1.15), edge);
-        cut.position.set(0, -0.03, -0.62);
-        g.add(cut);
-        // Angled tip.
-        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.075, 0.16), steel);
-        tip.position.set(0, 0.09, -1.24);
-        tip.rotation.x = 0.3;
-        g.add(tip);
-        box(0.16, 0.13, 0.03, accent, -0.04);  // guard
-        box(0.05, 0.05, 0.22, mat, 0.07);       // handle
-        break;
-      }
-      default: { // ak
-        box(0.07, 0.1, 0.42, mat, -0.3);                // receiver
-        box(0.05, 0.05, 0.26, mat, -0.62);              // handguard
-        box(0.03, 0.03, 0.18, steel, -0.86);            // barrel tip
-        box(0.055, 0.15, 0.1, mat, -0.15, 0, -0.13).rotation.x = 0.45; // banana mag
-        box(0.05, 0.14, 0.07, mat, 0.02, 0, -0.12).rotation.x = 0.45;  // grip
-        box(0.05, 0.08, 0.46, mat, 0.13);               // stock (bridges to receiver)
-        box(0.072, 0.014, 0.26, accent, -0.3, 0, 0.06); // neon accent
-        break;
-      }
-    }
-    g.traverse((o) => { o.raycast = () => {}; }); // gun isn't a hitbox
-    // Empty marker at the barrel tip so remote bullet tracers start at the
-    // muzzle rather than the shooter's head.
-    const muzzle = new THREE.Object3D();
-    muzzle.position.set(0, 0, muzzleZ);
-    g.add(muzzle);
+    const { group: g, muzzle } = buildWeaponMesh(id, arrToSkin(this.wepPalette) ?? WEAPON_SKINS.default);
     this.muzzleMarker = muzzle;
     this.weaponMesh = g;
     this.hand.add(g);
+  }
+
+  /** Build / swap the worn cosmetic accessory. */
+  private setAccessory(id: string) {
+    if (id === this.accessoryId) return;
+    this.accessoryId = id;
+    if (this.accessoryMesh) {
+      this.group.remove(this.accessoryMesh);
+      this.accessoryMesh.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); }
+      });
+      this.accessoryMesh = null;
+    }
+    const mesh = ACCESSORIES[id]?.build(this.color) ?? null;
+    if (mesh) {
+      mesh.traverse((o) => { o.raycast = () => {}; }); // cosmetics aren't hitboxes
+      this.group.add(mesh);
+      this.accessoryMesh = mesh;
+    }
   }
 
   /** World position of this avatar's gun muzzle (null if no weapon built). */
@@ -282,7 +237,9 @@ class Remote {
     this.deaths = state.deaths;
     this.group.visible = !state.dead;
     this.posture = state.posture ?? 0;
+    this.wepPalette = state.wepPalette;
     this.setWeapon(state.weapon ?? "ak");
+    this.setAccessory(state.accessory ?? "none");
     this.setInvis(!!state.invis);
     this.setAdmin(!!state.admin);
     this.invuln = !!state.invuln;

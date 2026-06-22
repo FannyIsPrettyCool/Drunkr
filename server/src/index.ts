@@ -189,7 +189,36 @@ interface Actor {
   slowUntil?: number;
   /** Slow multiplier applied while `slowUntil` is active (bots use it directly). */
   slowMul?: number;
+  /** Requested class change, applied on the next respawn. */
+  pendingCls?: string;
+  /** Multikill tracking: timestamp of the last kill and the running combo count. */
+  lastKillAt?: number;
+  multiKill?: number;
+  /** Custom Locker palettes: weaponId → [body,emissive,accent,metal,steel,glow]. */
+  lockerSkins?: Record<string, number[]>;
 }
+
+/** Set the broadcast palette for the actor's currently-held weapon (from the Locker). */
+function applyWepPalette(actor: Actor) {
+  const p = actor.lockerSkins?.[actor.state.weapon];
+  actor.state.wepPalette = Array.isArray(p) && p.length >= 6 ? p.slice(0, 6) : undefined;
+}
+
+/** Validate client-supplied Locker palettes (a few guns × 6 colour ints). */
+function sanitizeLockerSkins(raw: unknown): Record<string, number[]> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, number[]> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (count++ > 8 || typeof k !== "string" || k.length > 16 || !Array.isArray(v)) continue;
+    const arr = v.slice(0, 6).map((n) => (isFiniteNum(n) ? Math.max(0, Math.min(0xffffff, Math.floor(n))) : 0));
+    if (arr.length === 6) out[k] = arr;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Kills within this window of each other chain into a multikill (double, triple…). */
+const MULTI_WINDOW_MS = 4500;
 
 /** A single chunk of damage dealt to an actor, for assist attribution. */
 interface DamageHit {
@@ -343,7 +372,7 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     customMap: custom ?? undefined,
     world,
     nav: new NavGrid(world, map.bounds),
-    difficulty: config.difficulty in BOT_DIFF ? config.difficulty : "normal",
+    difficulty: config.difficulty && config.difficulty in BOT_DIFF ? config.difficulty : "normal",
     botsEnabled: config.bots,
     botCount: config.bots ? clamp(Math.round(config.botCount), 0, 10) : 0,
     actors: new Map(),
@@ -480,6 +509,9 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
   const hue = isFiniteNum(prefs?.skin) ? clamp(prefs!.skin!, 0, 1) : Math.random();
   const weapon = prefs?.weapon && LOADOUT_WEAPONS.includes(prefs.weapon) ? prefs.weapon : DEFAULT_WEAPON;
   const cls = prefs?.cls && CLASSES[prefs.cls] ? prefs.cls : DEFAULT_CLASS;
+  // Cosmetics are pure strings the server only stores + echoes (client validates).
+  const wepSkin = typeof prefs?.wepSkin === "string" ? prefs.wepSkin.slice(0, 24) : undefined;
+  const accessory = typeof prefs?.accessory === "string" ? prefs.accessory.slice(0, 24) : undefined;
   return {
     id, name: name.slice(0, 16) || `runner${id}`,
     pos: { x: s.x, y: s.y, z: s.z },
@@ -487,6 +519,8 @@ function makeState(room: Room, id: number, name: string, prefs?: PlayerPrefs): P
     health: PLAYER.maxHealth, hue,
     kills: 0, deaths: 0, assists: 0, dead: false,
     weapon, cls, invis: false, posture: 0,
+    wepSkin, accessory,
+    shotsFired: 0, shotsHit: 0, headshots: 0,
   };
 }
 
@@ -595,6 +629,7 @@ function handleShoot(
     atTime = clientTime;
   }
 
+  let landed = false, landedHead = false;
   for (const d of norm) {
     let bestId = -1, bestDist = w.range, bestHead = false;
     for (const [id, a] of room.actors) {
@@ -611,7 +646,16 @@ function handleShoot(
     if (bestId >= 0) {
       const at = { x: origin.x + d.x * bestDist, y: origin.y + d.y * bestDist, z: origin.z + d.z * bestDist };
       applyDamage(room, shooter, room.actors.get(bestId)!, bestHead, { from: origin, at });
+      landed = true; landedHead = landedHead || bestHead;
     }
+  }
+
+  // Accuracy stats (per trigger-pull; melee weapons are excluded as they
+  // always "hit" at point blank and would skew the number).
+  if (!melee && !w.melee) {
+    shooter.state.shotsFired = (shooter.state.shotsFired ?? 0) + 1;
+    if (landed) shooter.state.shotsHit = (shooter.state.shotsHit ?? 0) + 1;
+    if (landedHead) shooter.state.headshots = (shooter.state.headshots ?? 0) + 1;
   }
 }
 
@@ -685,6 +729,7 @@ function handleAbility(room: Room, actor: Actor, ability: string, origin?: Vec3,
       if (d > CONFUSION.radius) continue;
       const w = LOADOUT_WEAPONS[Math.floor(Math.random() * LOADOUT_WEAPONS.length)];
       a.state.weapon = w;
+      applyWepPalette(a);
       send(a.ws, { t: "forceweapon", weapon: w });
     }
   } else if (ability === "flash" || ability === "frag") {
@@ -905,6 +950,15 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
     victim.state.health = 0;
     victim.state.deaths++;
     attacker.state.kills++;
+    // Multikill: chain kills that land within the combo window (real kills only,
+    // not suicides). The count rides along on the kill broadcast.
+    let multi = 1;
+    if (attacker.id !== victim.id) {
+      const tnow = Date.now();
+      multi = tnow - (attacker.lastKillAt ?? 0) <= MULTI_WINDOW_MS ? (attacker.multiKill ?? 1) + 1 : 1;
+      attacker.multiKill = multi;
+      attacker.lastKillAt = tnow;
+    }
     // Assists: everyone (besides the killer) who damaged the victim within the
     // window gets credited. The killer is excluded even if they chipped earlier.
     const now = Date.now();
@@ -926,6 +980,7 @@ function dealDamage(room: Room, attacker: Actor, victim: Actor, dmg: number, hea
       t: "kill", killer: attacker.id, victim: victim.id, head,
       ...(assisters.length ? { assists: assisters } : {}),
       ...(shot ? { from: shot.from, at: shot.at } : {}),
+      ...(multi > 1 ? { multi } : {}),
     });
     if (room.mode !== "bomb") {
       setTimeout(() => respawn(room, victim), PLAYER.respawnDelayMs);
@@ -1260,6 +1315,11 @@ function respawn(room: Room, a: Actor) {
   a.grounded = false;
   a.damageLog = [];
   a.shockwavePending = false;
+  // Apply any class change requested while alive/dead.
+  if (a.pendingCls && CLASSES[a.pendingCls]) {
+    a.state.cls = a.pendingCls;
+    a.pendingCls = undefined;
+  }
   grantSpawnProtection(a);
   if (a.ai) {
     a.ai.ammo = weaponOf(a).magazine;
@@ -1681,6 +1741,7 @@ function handleAdmin(room: Room, actor: Actor, msg: C_Admin) {
     case "give": {
       if (msg.value && WEAPONS[msg.value]) {
         actor.state.weapon = msg.value;
+        applyWepPalette(actor);
         send(actor.ws, { t: "forceweapon", weapon: msg.value });
       }
       break;
@@ -1928,7 +1989,9 @@ wss.on("connection", (ws) => {
     actor = {
       id, ws, state, vel: { x: 0, y: 0, z: 0 }, grounded: false, lastSeen: now,
       nextShot: 0, msgWindowStart: now, msgCount: 0, abilityCd: {}, posHistory: [], damageLog: [],
+      lockerSkins: sanitizeLockerSkins(prefs?.lockerSkins),
     };
+    applyWepPalette(actor);
     room = target;
     target.actors.set(id, actor);
     grantSpawnProtection(actor);
@@ -2071,9 +2134,18 @@ wss.on("connection", (ws) => {
         // Players may only switch to loadout weapons or the always-available katana.
         if (WEAPONS[msg.weapon] && (LOADOUT_WEAPONS.includes(msg.weapon) || msg.weapon === "katana")) {
           actor.state.weapon = msg.weapon;
+          applyWepPalette(actor); // reflect the Locker palette for the new weapon
           // Enforce the equip delay before the new weapon can fire.
           actor.nextShot = Math.max(actor.nextShot, Date.now() + WEAPON_SWITCH_MS);
         }
+        break;
+      case "class":
+        // Class change is queued and applied on the next respawn (no mid-life swap).
+        if (typeof msg.cls === "string" && CLASSES[msg.cls]) actor.pendingCls = msg.cls;
+        break;
+      case "pong":
+        // Latency reply — RTT is now minus the timestamp we sent in the ping.
+        if (isFiniteNum(msg.ts)) actor.state.ping = Math.max(0, Math.min(999, Date.now() - msg.ts));
         break;
       case "ability":
         if (!room.intermission && !(room.mode === "bomb" && room.bombRoundOver) && typeof msg.ability === "string")
@@ -2203,6 +2275,17 @@ setInterval(() => {
     });
   }
 }, 1000 / SNAPSHOT_RATE);
+
+// Latency probe: ping every human client a couple times a second; the round
+// trip is measured when their C_Pong comes back (see the "pong" handler).
+setInterval(() => {
+  const ts = Date.now();
+  for (const room of rooms.values()) {
+    for (const a of room.actors.values()) {
+      if (a.ws) send(a.ws, { t: "ping", ts });
+    }
+  }
+}, 2000);
 
 // A persistent default room so the browser is never empty.
 createRoom(

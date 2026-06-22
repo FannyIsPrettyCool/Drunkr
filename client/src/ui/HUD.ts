@@ -11,6 +11,7 @@ export class HUD {
   private hitmarker = document.getElementById("hitmarker")!;
   private damageFlash = document.getElementById("damage-flash")!;
   private respawn = document.getElementById("respawn")!;
+  private deathBy = document.getElementById("death-by")!;
   private scoreboard = document.getElementById("scoreboard")!;
   private reload = document.getElementById("reload")!;
   private reloadFill = document.getElementById("reload-fill")!;
@@ -25,10 +26,15 @@ export class HUD {
   private bannerTimer = 0;
   private timerEl = document.getElementById("timer")!;
   private fpsEl = document.getElementById("fps")!;
+  private pingEl = document.getElementById("ping")!;
   private toastEl = document.getElementById("toast")!;
   private toastTimer = 0;
   private killConfirmEl = document.getElementById("killconfirm")!;
   private killConfirmTimer = 0;
+  private multiEl = document.getElementById("multikill")!;
+  private multiTextEl = document.getElementById("mk-text")!;
+  private multiFillEl = document.getElementById("mk-fill")!;
+  private multiTimer = 0;
   private protectEl = document.getElementById("protect")!;
   private speedometer = document.getElementById("speedometer")!;
   private speedVal = document.getElementById("speed-val")!;
@@ -102,6 +108,17 @@ export class HUD {
     }
   }
 
+  /** Latency readout next to the FPS counter (null hides it). */
+  setPing(ms: number | null) {
+    if (ms === null) {
+      this.pingEl.classList.add("hidden");
+    } else {
+      this.pingEl.classList.remove("hidden");
+      this.pingEl.textContent = `${ms} ms`;
+      this.pingEl.classList.toggle("bad", ms > 120);
+    }
+  }
+
   banner(text: string) {
     this.bannerEl.textContent = text;
     this.bannerEl.classList.remove("hidden");
@@ -133,6 +150,19 @@ export class HUD {
 
   setDead(dead: boolean) {
     this.respawn.classList.toggle("hidden", !dead);
+    if (!dead) this.deathBy.classList.add("hidden");
+  }
+
+  /** Who/what killed the local player, shown on the elimination overlay. */
+  setDeathInfo(killerName: string | null, head: boolean, fell: boolean) {
+    if (fell || !killerName) {
+      this.deathBy.textContent = "fell into the void";
+    } else {
+      this.deathBy.innerHTML =
+        `${head ? '<span class="db-head">✜ headshot</span> by ' : "killed by "}` +
+        `<span class="db-killer">${esc(killerName)}</span>`;
+    }
+    this.deathBy.classList.remove("hidden");
   }
 
   setReload(active: boolean, progress: number) {
@@ -150,16 +180,17 @@ export class HUD {
     this.crosshair.style.opacity = active ? "0" : "1";
   }
 
-  addKill(killerName: string, victimName: string, head: boolean, assistNames: string[] = []) {
+  addKill(killerName: string, victimName: string, head: boolean, assistNames: string[] = [], multi = 1) {
     const row = document.createElement("div");
     row.className = "row";
     const assist = assistNames.length
       ? `<span class="assist">+${assistNames.map(esc).join(", ")}</span>`
       : "";
+    const badge = multi >= 2 ? `<span class="mk-badge">${multiKillName(multi)}</span>` : "";
     row.innerHTML =
       `<span class="killer">${esc(killerName)}</span>` +
       `<span class="verb">${head ? '✜' : '»'}</span>` +
-      `<span class="victim">${esc(victimName)}</span>` + assist;
+      `<span class="victim">${esc(victimName)}</span>` + assist + badge;
     if (head) row.querySelector(".verb")!.classList.add("head");
     this.killfeed.prepend(row);
     while (this.killfeed.children.length > 5) {
@@ -179,11 +210,12 @@ export class HUD {
           `<td>${p.admin ? "★ " : ""}${esc(p.name)}</td>` +
           `<td class="num">${p.kills}</td>` +
           `<td class="num">${p.deaths}</td>` +
-          `<td class="num">${p.assists ?? 0}</td></tr>`,
+          `<td class="num">${p.assists ?? 0}</td>` +
+          `<td class="num">${p.ping ?? 0}</td></tr>`,
       )
       .join("");
     this.scoreboard.innerHTML =
-      `<h2>SCORES</h2><table><tr><th>RUNNER</th><th class="num">K</th><th class="num">D</th><th class="num">A</th></tr>${rows}</table>`;
+      `<h2>SCORES</h2><table><tr><th>RUNNER</th><th class="num">K</th><th class="num">D</th><th class="num">A</th><th class="num">MS</th></tr>${rows}</table>`;
   }
 
   /** Live speedometer (units/s), colour-tiered by how fast you're moving. */
@@ -211,6 +243,28 @@ export class HUD {
     );
   }
 
+  /**
+   * Big centred multikill announcement for the local player (double/triple/…),
+   * with a combo bar that depletes over the combo window and resets/extends on
+   * each new kill. `windowMs` should match the server's combo window.
+   */
+  multiKill(count: number, windowMs = 4500) {
+    this.multiTextEl.textContent = multiKillName(count);
+    this.multiEl.className = `mk-${Math.min(count, 6)}`; // clears "hidden", tiers colour
+    void this.multiEl.offsetWidth; // restart pop animation
+    this.multiEl.classList.add("show");
+
+    // Depleting bar: snap to full, then animate width to 0 over the window.
+    this.multiFillEl.style.transition = "none";
+    this.multiFillEl.style.width = "100%";
+    void this.multiFillEl.offsetWidth;
+    this.multiFillEl.style.transition = `width ${windowMs}ms linear`;
+    this.multiFillEl.style.width = "0%";
+
+    clearTimeout(this.multiTimer);
+    this.multiTimer = window.setTimeout(() => this.multiEl.classList.add("hidden"), windowMs);
+  }
+
   /** Append a chat line to the log; auto-removed after 8 s via CSS animation. */
   addChatMessage(name: string, text: string) {
     const line = document.createElement("div");
@@ -234,4 +288,16 @@ export class HUD {
 
 function esc(s: string): string {
   return s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!));
+}
+
+/** Announcement label for a multikill count. */
+function multiKillName(count: number): string {
+  switch (count) {
+    case 2: return "DOUBLE KILL";
+    case 3: return "TRIPLE KILL";
+    case 4: return "QUAD KILL";
+    case 5: return "MEGA KILL";
+    case 6: return "ULTRA KILL";
+    default: return count >= 7 ? "MONSTER KILL" : "KILL";
+  }
 }

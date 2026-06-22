@@ -157,6 +157,16 @@ export class LocalPlayer {
     this.grappleTime = GRAPPLE.durationMs / 1000;
   }
 
+  /** True while a grapple is actively reeling (for the rope visual). */
+  get grappling(): boolean {
+    return this.grappleAnchor !== null && this.grappleTime > 0;
+  }
+
+  /** The current grapple anchor point, or null when not grappling. */
+  get grappleAnchorPos(): THREE.Vector3 | null {
+    return this.grappleAnchor;
+  }
+
   /** Skater Slipstream: snap to a strong forward momentum burst along heading. */
   slipstream() {
     this.vel.x = this.lastWishX * SLIPSTREAM.boost;

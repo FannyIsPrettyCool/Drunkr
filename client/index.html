@@ -14,6 +14,7 @@
     <div id="hud" class="hidden">
       <div id="timer">10:00</div>
       <div id="fps" class="hidden">60 FPS</div>
+      <div id="ping" class="hidden">0 ms</div>
       <div id="hitmarker"></div>
       <div id="crosshair">
         <span></span><span></span><span></span><span></span>
@@ -42,7 +43,7 @@
       </div>
       <div id="blind"></div>
       <div id="damage-flash"></div>
-      <div id="respawn" class="hidden">ELIMINATED<br /><small>respawning…</small></div>
+      <div id="respawn" class="hidden">ELIMINATED<div id="death-by" class="hidden"></div><small>respawning…</small></div>
       <div id="bomb-hud" class="hidden">
         <div id="bomb-team"></div>
         <div id="bomb-score"></div>
@@ -56,6 +57,10 @@
       <div id="banner" class="hidden"></div>
       <div id="protect" class="hidden">⛨ SPAWN PROTECTION</div>
       <div id="killconfirm" class="hidden"></div>
+      <div id="multikill" class="hidden">
+        <div id="mk-text"></div>
+        <div id="mk-bar"><div id="mk-fill"></div></div>
+      </div>
       <div id="toast" class="hidden"></div>
       <div id="admin-badge" class="hidden">★ ADMIN · press ` for panel</div>
       <div id="intermission" class="hidden">
@@ -85,7 +90,7 @@
           <div class="inter-scores-col">
             <div class="inter-col-label">SCOREBOARD</div>
             <table>
-              <thead><tr><th>PLAYER</th><th class="r">K</th><th class="r">D</th><th class="r">A</th></tr></thead>
+              <thead><tr><th>PLAYER</th><th class="r">K</th><th class="r">D</th><th class="r">A</th><th class="r">ACC</th><th class="r">HS</th></tr></thead>
               <tbody id="inter-score-body"></tbody>
             </table>
           </div>
@@ -103,9 +108,6 @@
         <div id="pm-title">PAUSED</div>
 
         <input id="pm-name" maxlength="16" placeholder="callsign" autocomplete="off" />
-
-        <div class="pm-section-label">SKIN</div>
-        <div id="pm-skins"></div>
 
         <div class="pm-section-label">CLASS</div>
         <select id="pm-class">
@@ -125,25 +127,20 @@
           <option value="saboteur">Saboteur · confuse / flash</option>
         </select>
 
-        <div class="pm-music">
-          <label class="check"><input type="checkbox" id="pm-music-on" checked /> Music</label>
-          <label class="pm-vol-label">VOL <span id="pm-music-val">50</span>%
-            <input type="range" id="pm-music-vol" min="0" max="100" step="5" value="50" />
-          </label>
-        </div>
-        <div class="pm-music">
-          <label class="pm-vol-label">SFX <span id="pm-sfx-val">80</span>%
-            <input type="range" id="pm-sfx-vol" min="0" max="100" step="5" value="80" />
-          </label>
-        </div>
+        <button id="pm-open-locker" class="locker-btn">CUSTOMIZE SKINS &amp; GEAR ▸</button>
+
+        <div id="pm-settings"></div>
 
         <button id="pm-resume" class="primary">RESUME</button>
-        <p class="hint pm-hint">Class &amp; skin apply on next game.</p>
+        <p class="hint pm-hint">Skin applies on next game; class on next spawn.</p>
       </div>
     </div>
 
     <!-- Admin panel (shown only to players granted admin) -->
     <div id="admin-panel" class="hidden"></div>
+
+    <!-- Locker: weapon-skin colour editor + accessory character preview -->
+    <div id="locker" class="hidden"></div>
 
     <!-- Lobby -->
     <div id="menu">
@@ -153,16 +150,8 @@
 
         <div class="prefs">
           <div class="prefs-row">
-            <span class="prefs-label">SKIN</span>
-            <div id="skins"></div>
-          </div>
-          <div class="prefs-row">
-            <span class="prefs-label">PRIMARY</span>
-            <select id="cfg-loadout">
-              <option value="ak">AK-44 · auto</option>
-              <option value="sniper">LVR-50 · sniper</option>
-              <option value="shotgun">DB-12 · shotgun</option>
-            </select>
+            <span class="prefs-label">LOCKER</span>
+            <button id="open-locker" class="locker-btn">CUSTOMIZE SKINS &amp; GEAR ▸</button>
           </div>
           <div class="prefs-row">
             <span class="prefs-label">CLASS</span>
@@ -212,19 +201,13 @@
               <option value="spire">Spire (vertical)</option>
               <option value="atrium">Atrium (vertical)</option>
               <option value="skyhaven">Skyhaven (vertical)</option>
+              <option value="__custom">Custom map (from editor)…</option>
             </select>
           </label>
-          <label class="field" id="cfg-custom-row">CUSTOM MAP (from editor)
+          <label class="field hidden" id="cfg-custom-row">CUSTOM MAP FILE
             <input id="cfg-custom-file" type="file" accept="application/json" />
           </label>
           <div id="cfg-custom-name" class="hint"></div>
-          <label class="field">DIFFICULTY
-            <select id="cfg-diff">
-              <option value="easy">Easy</option>
-              <option value="normal" selected>Normal</option>
-              <option value="hard">Hard</option>
-            </select>
-          </label>
           <label class="check" id="cfg-bots-row"><input type="checkbox" id="cfg-bots" checked /> Enable bots</label>
           <label class="field" id="cfg-botcount-row">BOTS <span id="cfg-botcount-val">4</span>
             <input type="range" id="cfg-botcount" min="0" max="10" value="4" />
@@ -234,35 +217,8 @@
         </div>
 
         <div id="tab-settings" class="tab-panel hidden">
-          <label class="field">SENSITIVITY <span id="set-sens-val">1.00</span>
-            <input type="range" id="set-sens" min="0.2" max="3" step="0.05" value="1" />
-          </label>
-          <label class="field">SCOPED SENS <span id="set-scoped-val">0.60</span>
-            <input type="range" id="set-scoped" min="0.2" max="1.5" step="0.05" value="0.6" />
-          </label>
-          <label class="field">QUALITY
-            <select id="set-quality">
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </label>
-          <label class="field">FRAME RATE
-            <select id="set-fps">
-              <option value="0">Unlimited</option>
-              <option value="144">144</option>
-              <option value="120">120</option>
-              <option value="60">60</option>
-            </select>
-          </label>
-          <label class="check"><input type="checkbox" id="set-showfps" /> Show FPS counter</label>
-          <div class="set-row">
-            <label class="check"><input type="checkbox" id="set-music-on" checked /> Music</label>
-            <label class="field set-music-vol">VOLUME <span id="set-music-val">50</span>%
-              <input type="range" id="set-music-vol" min="0" max="100" step="5" value="50" />
-            </label>
-          </div>
-          <p class="hint">Settings save automatically and apply next time you drop in.</p>
+          <div id="lobby-settings"></div>
+          <p class="hint">Settings save automatically.</p>
         </div>
 
         <div id="status">connecting…</div>

@@ -1,10 +1,9 @@
 import type { Vec3 } from "./math.js";
 
 /**
- * Visual primitive for a {@link MapBox}. Collision is always the enclosing
- * axis-aligned bounding box of `size` regardless of shape (same approximation
- * used for rotated boxes), so non-box shapes are cover/decoration that still
- * block movement and bullets as a box.
+ * Visual primitive for a {@link MapBox}. Collision matches the silhouette:
+ * cylinders/spheres collide round, wedges as a sloped prism (see CollisionWorld).
+ * X/Z-tilted shapes still fall back to the enclosing AABB.
  */
 export type BoxShape = "box" | "cylinder" | "sphere" | "wedge";
 export const BOX_SHAPES: readonly BoxShape[] = ["box", "cylinder", "sphere", "wedge"];

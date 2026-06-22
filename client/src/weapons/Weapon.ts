@@ -4,6 +4,7 @@ import type { LocalPlayer } from "../entities/LocalPlayer.js";
 import type { RemotePlayers } from "../entities/RemotePlayers.js";
 import type { Network } from "../net/Network.js";
 import type { Particles } from "../render/Particles.js";
+import { resolveWeaponSkin } from "../render/cosmetics.js";
 
 /** Equip time (s) — you can't fire for a moment after switching weapons. */
 const SWITCH_DELAY = 0.25;
@@ -56,6 +57,9 @@ export class Weapon {
   private swing = 0;
   /** Equip (pullout) animation time remaining (s). */
   private equipT = 0;
+  /** Inspect animation: time remaining (s) and total duration for the envelope. */
+  private inspectT = 0;
+  private inspectDur = 0;
   /** Weapon-bob phase, advanced by player movement. */
   private bobTime = 0;
 
@@ -133,20 +137,22 @@ export class Weapon {
     }
 
     const g = new THREE.Group();
+    // Apply the chosen weapon skin palette (Locker custom palette or default).
+    const sk = resolveWeaponSkin(this.def.id);
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x16182a, emissive: 0x18e0ff, emissiveIntensity: 0.25,
+      color: sk.body, emissive: sk.emissive, emissiveIntensity: 0.25,
       roughness: 0.4, metalness: 0.6,
     });
     const accentMat = new THREE.MeshStandardMaterial({
-      color: 0xff2d9b, emissive: 0xff2d9b, emissiveIntensity: 0.8,
+      color: sk.accent, emissive: sk.accent, emissiveIntensity: 0.8,
     });
 
     // Shared materials for the polished gun models.
     const metal = new THREE.MeshStandardMaterial({
-      color: 0x14161d, emissive: 0x0a1a24, emissiveIntensity: 0.3, metalness: 0.8, roughness: 0.33,
+      color: sk.metal, emissive: sk.emissive, emissiveIntensity: 0.18, metalness: 0.8, roughness: 0.33,
     });
-    const steel = new THREE.MeshStandardMaterial({ color: 0x39414f, metalness: 0.85, roughness: 0.28 });
-    const glow = new THREE.MeshStandardMaterial({ color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.6 });
+    const steel = new THREE.MeshStandardMaterial({ color: sk.steel, metalness: 0.85, roughness: 0.28 });
+    const glow = new THREE.MeshStandardMaterial({ color: sk.glow, emissive: sk.glow, emissiveIntensity: 1.6 });
 
     const add = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
       const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
@@ -211,10 +217,10 @@ export class Weapon {
         // A proper neon katana: flat steel blade with a glowing cutting edge,
         // a guard (tsuba), a wrapped handle (tsuka) and an angled tip (kissaki).
         const steel = new THREE.MeshStandardMaterial({
-          color: 0xbfe6ff, emissive: 0x0c3b58, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
+          color: 0xbfe6ff, emissive: sk.emissive, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
         });
         const edgeMat = new THREE.MeshStandardMaterial({
-          color: 0x18e0ff, emissive: 0x18e0ff, emissiveIntensity: 1.9,
+          color: sk.glow, emissive: sk.glow, emissiveIntensity: 1.9,
         });
         const wrap = new THREE.MeshStandardMaterial({ color: 0x12111a, roughness: 0.85 });
 
@@ -269,6 +275,11 @@ export class Weapon {
     this.camera.add(g);
   }
 
+  /** Rebuild the viewmodel to pick up a freshly-edited Locker skin. */
+  refreshSkin() {
+    this.buildViewmodel();
+  }
+
   /** True while zoomed in through a scope (for scoped-sensitivity). */
   get scoped(): boolean {
     return this.zoom > 0.5;
@@ -291,6 +302,13 @@ export class Weapon {
     this.reloadDelayTimer = 0;
     this.ammo = this.def.magazine;
     this.cb.onAmmo(this.ammo, this.def.magazine);
+  }
+
+  /** Start the local inspect animation. Spammable — re-triggering restarts it. */
+  startInspect() {
+    if (this.local.dead || this.reloading) return;
+    this.inspectDur = this.def.melee ? 1.5 : 1.7;
+    this.inspectT = this.inspectDur;
   }
 
   reload() {
@@ -357,6 +375,7 @@ export class Weapon {
 
   private fire() {
     this.cooldown = 60 / this.def.fireRate;
+    this.inspectT = 0; // shooting cancels the inspect animation
     if (this.def.magazine > 0 && !this.infiniteAmmo) {
       this.ammo--;
       this.cb.onAmmo(this.ammo, this.def.magazine);
@@ -557,15 +576,42 @@ export class Weapon {
       }
     }
 
+    // Inspect: bring the weapon up + turn it to show it off. Guns tilt toward
+    // the camera; the katana does a full spinning flourish. `env` is a smooth
+    // 0→1→0 envelope so it eases in and settles back.
+    this.inspectT = Math.max(0, this.inspectT - dt);
+    let insX = 0, insY = 0, insZ = 0, insRX = 0, insRY = 0, insRZ = 0;
+    if (this.inspectT > 0 && this.inspectDur > 0) {
+      const p = 1 - this.inspectT / this.inspectDur; // 0 → 1 over the anim
+      const env = Math.sin(p * Math.PI);             // 0 → 1 → 0 (smooth in/out)
+      if (this.def.melee) {
+        // Bottle-flip: toss the katana up, one full forward flip, lands in hand.
+        const toss = Math.sin(p * Math.PI);       // up then back down
+        insX = -0.05 * env;
+        insY = 0.22 * toss;                       // arc up and return
+        insZ = -0.05 * env;                       // slightly away
+        insRX = p * Math.PI * 2;                  // exactly one flip → lands level
+      } else {
+        // Gun: hold it out AWAY from the camera and rotate to show the side,
+        // settling back. Lower (not raised in front of the face).
+        insX = -0.05 * env;
+        insY = -0.03 * env;
+        insZ = -0.18 * env;        // push away from the camera
+        insRY = env * 1.4;         // turn the side into view
+        insRX = env * 0.4;
+        insRZ = env * -0.3;
+      }
+    }
+
     this.viewmodel.position.set(
-      0.22 + this.reloadDip * 0.04 - slash * 0.18 + bobX + eqX,
-      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24 + slash * 0.1 - bobY + eqY,
-      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05 - slash * 0.25 + eqZ,
+      0.22 + this.reloadDip * 0.04 - slash * 0.18 + bobX + eqX + insX,
+      -0.2 - this.kick * 0.015 - this.reloadDip * 0.24 + slash * 0.1 - bobY + eqY + insY,
+      -0.35 + this.kick * 0.06 + this.reloadDip * 0.05 - slash * 0.25 + eqZ + insZ,
     );
     this.viewmodel.rotation.set(
-      this.reloadDip * 0.6 + work - slash * 1.5 + eqRX,
-      this.reloadDip * 0.35 + slash * 0.4,
-      slash * 1.3 + eqRZ,
+      this.reloadDip * 0.6 + work - slash * 1.5 + eqRX + insRX,
+      this.reloadDip * 0.35 + slash * 0.4 + insRY,
+      slash * 1.3 + eqRZ + insRZ,
     );
   }
 

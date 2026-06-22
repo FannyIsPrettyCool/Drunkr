@@ -1,8 +1,11 @@
 import { Network } from "./net/Network.js";
 import { Game } from "./core/Game.js";
 import { Music } from "./audio/Music.js";
-import { settings, saveSettings, type Settings } from "./core/Settings.js";
-import type { RoomInfo, BotDifficulty } from "@drunkr/shared";
+import { settings } from "./core/Settings.js";
+import { SettingsPanel } from "./ui/SettingsPanel.js";
+import { Locker } from "./ui/Locker.js";
+import { loadLocker } from "./render/cosmetics.js";
+import type { RoomInfo } from "@drunkr/shared";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const menu = document.getElementById("menu")!;
@@ -20,111 +23,37 @@ const cfgCustomRow = document.getElementById("cfg-custom-row")!;
 const cfgBotsRow = document.getElementById("cfg-bots-row")!;
 const cfgBotCountRow = document.getElementById("cfg-botcount-row")!;
 const cfgMap = document.getElementById("cfg-map") as HTMLSelectElement;
-const cfgDiff = document.getElementById("cfg-diff") as HTMLSelectElement;
 const cfgBots = document.getElementById("cfg-bots") as HTMLInputElement;
 const cfgBotCount = document.getElementById("cfg-botcount") as HTMLInputElement;
 const cfgBotCountVal = document.getElementById("cfg-botcount-val")!;
 const cfgName = document.getElementById("cfg-name") as HTMLInputElement;
-const skinsEl = document.getElementById("skins")!;
-const loadoutSel = document.getElementById("cfg-loadout") as HTMLSelectElement;
 
 nameInput.value = localStorage.getItem("drunkr.name") ?? "";
 
-// --- Skins -----------------------------------------------------------------
-const SKIN_HUES = [0.0, 0.08, 0.13, 0.33, 0.5, 0.58, 0.75, 0.85];
-let selectedHue = Number(localStorage.getItem("drunkr.skin") ?? SKIN_HUES[5]);
-for (const hue of SKIN_HUES) {
-  const sw = document.createElement("button");
-  sw.className = "skin";
-  sw.style.background = `hsl(${hue * 360}, 85%, 55%)`;
-  if (Math.abs(hue - selectedHue) < 0.001) sw.classList.add("active");
-  sw.addEventListener("click", () => {
-    selectedHue = hue;
-    localStorage.setItem("drunkr.skin", String(hue));
-    skinsEl.querySelectorAll(".skin").forEach((s) => s.classList.remove("active"));
-    sw.classList.add("active");
-  });
-  skinsEl.appendChild(sw);
-}
-loadoutSel.value = localStorage.getItem("drunkr.loadout") ?? "ak";
-loadoutSel.addEventListener("change", () =>
-  localStorage.setItem("drunkr.loadout", loadoutSel.value));
-
+// Skin hue + cosmetics now live in the Locker (see Locker.ts).
 const classSel = document.getElementById("cfg-class") as HTMLSelectElement;
 classSel.value = localStorage.getItem("drunkr.class") ?? "wind";
 classSel.addEventListener("change", () => localStorage.setItem("drunkr.class", classSel.value));
 
+const locker = new Locker();
+document.getElementById("open-locker")!.addEventListener("click", () => locker.open());
+
 function prefs() {
-  return { skin: selectedHue, weapon: loadoutSel.value, cls: classSel.value };
+  const l = loadLocker();
+  const skin = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
+  return { skin, cls: classSel.value, lockerSkins: l.skins, accessory: l.accessory };
 }
 
 // --- Settings --------------------------------------------------------------
-const setSens = document.getElementById("set-sens") as HTMLInputElement;
-const setSensVal = document.getElementById("set-sens-val")!;
-const setScoped = document.getElementById("set-scoped") as HTMLInputElement;
-const setScopedVal = document.getElementById("set-scoped-val")!;
-const setQuality = document.getElementById("set-quality") as HTMLSelectElement;
-const setFps = document.getElementById("set-fps") as HTMLSelectElement;
-const setShowFps = document.getElementById("set-showfps") as HTMLInputElement;
-
-setSens.value = String(settings.sensitivity);
-setSensVal.textContent = settings.sensitivity.toFixed(2);
-setScoped.value = String(settings.scopedSens);
-setScopedVal.textContent = settings.scopedSens.toFixed(2);
-setQuality.value = settings.quality;
-setFps.value = String(settings.fpsCap);
-setShowFps.checked = settings.showFps;
-
-setSens.addEventListener("input", () => {
-  settings.sensitivity = Number(setSens.value);
-  setSensVal.textContent = settings.sensitivity.toFixed(2);
-  saveSettings();
-});
-setScoped.addEventListener("input", () => {
-  settings.scopedSens = Number(setScoped.value);
-  setScopedVal.textContent = settings.scopedSens.toFixed(2);
-  saveSettings();
-});
-setQuality.addEventListener("change", () => {
-  settings.quality = setQuality.value as Settings["quality"];
-  saveSettings();
-});
-setFps.addEventListener("change", () => {
-  settings.fpsCap = Number(setFps.value);
-  saveSettings();
-});
-setShowFps.addEventListener("change", () => {
-  settings.showFps = setShowFps.checked;
-  saveSettings();
-});
-
-const setMusicOn = document.getElementById("set-music-on") as HTMLInputElement;
-const setMusicVol = document.getElementById("set-music-vol") as HTMLInputElement;
-const setMusicVal = document.getElementById("set-music-val")!;
-
-setMusicOn.checked = settings.musicEnabled;
-setMusicVol.value = String(Math.round(settings.musicVolume * 100));
-setMusicVal.textContent = setMusicVol.value;
-
-setMusicOn.addEventListener("change", () => {
-  settings.musicEnabled = setMusicOn.checked;
-  music.setEnabled(settings.musicEnabled);
-  saveSettings();
-  // Keep in-game pause menu in sync.
-  const el = document.getElementById("pm-music-on") as HTMLInputElement | null;
-  if (el) el.checked = settings.musicEnabled;
-});
-setMusicVol.addEventListener("input", () => {
-  const v = Number(setMusicVol.value);
-  setMusicVal.textContent = String(v);
-  settings.musicVolume = v / 100;
-  music.setVolume(settings.musicVolume);
-  saveSettings();
-  const el = document.getElementById("pm-music-vol") as HTMLInputElement | null;
-  if (el) { el.value = String(v); (document.getElementById("pm-music-val")!).textContent = String(v); }
-});
-
 const music = new Music(settings.musicEnabled, settings.musicVolume);
+
+// Shared settings UI (sensitivity / audio / graphics / key rebinding). The same
+// component is mounted in the in-game pause menu (see Game.ts).
+new SettingsPanel(document.getElementById("lobby-settings")!, {
+  onMusicEnabled: (on) => music.setEnabled(on),
+  onMusicVol: (v) => music.setVolume(v),
+});
+
 const net = new Network();
 let game: Game | null = null;
 let connecting = false;
@@ -153,10 +82,13 @@ cfgBots.addEventListener("change", () => (cfgBotCount.disabled = !cfgBots.checke
 function applyModeUI() {
   const isBomb = cfgMode.value === "bomb";
   cfgMapRow.classList.toggle("hidden", isBomb);
-  cfgCustomRow.classList.toggle("hidden", isBomb);
+  // The custom-map file picker only shows when the map dropdown is set to it.
+  const wantCustom = !isBomb && cfgMap.value === "__custom";
+  cfgCustomRow.classList.toggle("hidden", !wantCustom);
   // Bots are available in bomb mode too.
 }
 cfgMode.addEventListener("change", applyModeUI);
+cfgMap.addEventListener("change", applyModeUI);
 applyModeUI();
 
 // --- Room list -------------------------------------------------------------
@@ -217,18 +149,20 @@ cfgCustomFile.addEventListener("change", async () => {
 function createRoom() {
   if (!net.connected || game) return;
   const isBomb = cfgMode.value === "bomb";
+  const wantCustom = !isBomb && cfgMap.value === "__custom";
+  if (wantCustom && !customMap) { status.textContent = "load a custom map file first"; return; }
   net.send({
     t: "create",
     name: callsign(),
     ...prefs(),
     config: {
       name: cfgName.value.trim(),
-      mapId: isBomb ? "dust2" : cfgMap.value,
+      // Custom uses an inline map; otherwise fall back to a built-in id.
+      mapId: isBomb ? "dust2" : wantCustom ? "custom" : cfgMap.value,
       bots: cfgBots.checked,
       botCount: Number(cfgBotCount.value),
-      difficulty: cfgDiff.value as BotDifficulty,
       mode: isBomb ? "bomb" : "ffa",
-      ...(!isBomb && customMap ? { customMap: customMap as never } : {}),
+      ...(wantCustom ? { customMap: customMap as never } : {}),
     },
   });
   status.textContent = "creating server…";

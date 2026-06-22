@@ -30,6 +30,18 @@ export interface PlayerState {
   invuln?: boolean;
   /** Posture for remote animation: 0 = standing, 1 = crouching, 2 = sliding. */
   posture?: number;
+  /** Cosmetic weapon-skin id (recolours the held weapon). */
+  wepSkin?: string;
+  /** Custom palette for the currently-held weapon: [body,emissive,accent,metal,steel,glow] hex. */
+  wepPalette?: number[];
+  /** Cosmetic accessory id (worn on the avatar). */
+  accessory?: string;
+  /** Round-trip latency in ms (server-measured). */
+  ping?: number;
+  /** Match stats for the end screen. */
+  shotsFired?: number;
+  shotsHit?: number;
+  headshots?: number;
 }
 
 /** A live grenade, sent in snapshots so clients can render it. */
@@ -58,7 +70,8 @@ export interface RoomConfig {
   mapId: string;
   bots: boolean;
   botCount: number;
-  difficulty: BotDifficulty;
+  /** Bot difficulty; defaults to "normal" server-side when omitted. */
+  difficulty?: BotDifficulty;
   /** An editor-exported map to host instead of a built-in (validated server-side). */
   customMap?: GameMap;
   /** Game mode — defaults to "ffa". */
@@ -85,6 +98,12 @@ export interface PlayerPrefs {
   weapon?: string;
   /** Class id. */
   cls?: string;
+  /** Cosmetic weapon-skin id. */
+  wepSkin?: string;
+  /** Custom per-weapon palettes from the Locker: weaponId → [body,emissive,accent,metal,steel,glow]. */
+  lockerSkins?: Record<string, number[]>;
+  /** Cosmetic accessory id. */
+  accessory?: string;
 }
 
 /** Join an existing room (or quick-play when roomId omitted). */
@@ -148,6 +167,18 @@ export interface C_SwitchWeapon {
   weapon: string;
 }
 
+/** Request a class change. Applied by the server on the next respawn. */
+export interface C_SwitchClass {
+  t: "class";
+  cls: string;
+}
+
+/** Latency reply: echoes the server's ping timestamp so it can measure RTT. */
+export interface C_Pong {
+  t: "pong";
+  ts: number;
+}
+
 /** Use a server-side ability (cloak, confusion, grenades). */
 export interface C_Ability {
   t: "ability";
@@ -199,6 +230,8 @@ export type ClientMessage =
   | C_Respawn
   | C_Fell
   | C_SwitchWeapon
+  | C_SwitchClass
+  | C_Pong
   | C_Ability
   | C_VoteMap
   | C_Use
@@ -270,6 +303,14 @@ export interface S_Kill {
   from?: Vec3;
   /** Impact point of the lethal shot. */
   at?: Vec3;
+  /** The killer's multikill count for this kill within the combo window (>=1). */
+  multi?: number;
+}
+
+/** Latency probe: the server asks the client to echo `ts` back in a C_Pong. */
+export interface S_Ping {
+  t: "ping";
+  ts: number;
 }
 
 /** Broadcast a fired shot so other clients can render tracers / sound. */
@@ -429,6 +470,7 @@ export type ServerMessage =
   | S_Teleport
   | S_Impulse
   | S_Slow
+  | S_Ping
   | S_Chat;
 
 export function encode(msg: ClientMessage | ServerMessage): string {

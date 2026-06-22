@@ -42,7 +42,10 @@ import { HUD } from "../ui/HUD.js";
 import { AdminPanel } from "../ui/AdminPanel.js";
 import { Sfx } from "../audio/Sfx.js";
 import { Music } from "../audio/Music.js";
-import { settings, saveSettings, QUALITY_HEIGHT } from "./Settings.js";
+import { settings, QUALITY_HEIGHT } from "./Settings.js";
+import { SettingsPanel } from "../ui/SettingsPanel.js";
+import { ACCESSORIES, ACCESSORY_EMIT_Y } from "../render/cosmetics.js";
+import { Locker } from "../ui/Locker.js";
 import type { Network } from "../net/Network.js";
 
 export class Game {
@@ -71,14 +74,9 @@ export class Game {
   private pmTitle = document.getElementById("pm-title")!;
   private pmName = document.getElementById("pm-name") as HTMLInputElement;
   private pmClass = document.getElementById("pm-class") as HTMLSelectElement;
-  private pmSkinsEl = document.getElementById("pm-skins")!;
   private pmResumeBtn = document.getElementById("pm-resume") as HTMLButtonElement;
-  private pmMusicOn = document.getElementById("pm-music-on") as HTMLInputElement;
-  private pmMusicVol = document.getElementById("pm-music-vol") as HTMLInputElement;
-  private pmMusicVal = document.getElementById("pm-music-val")!;
-  private pmSfxVol = document.getElementById("pm-sfx-vol") as HTMLInputElement;
-  private pmSfxVal = document.getElementById("pm-sfx-val")!;
-  private pmSelectedHue = Number(localStorage.getItem("drunkr.skin") ?? 0.58);
+  private settingsPanel!: SettingsPanel;
+  private locker = new Locker();
 
   private chatOpen = false;
   private chatBar = document.getElementById("chat-bar")!;
@@ -110,6 +108,8 @@ export class Game {
   private reloadSoundFired = false;
   /** Death-cam: line + muzzle marker showing where the lethal shot came from. */
   private deathTracer: THREE.Group | null = null;
+  /** Slinger grapple rope: black line from the hand to the anchor while reeling. */
+  private grappleLine: THREE.Line | null = null;
 
   // Bomb defusal mode state.
   private inBombMode = false;
@@ -202,7 +202,9 @@ export class Game {
 
     this.input.onReload = () => this.weapon.reload();
     this.input.onSwitch = (id) => this.switchWeapon(id);
+    this.input.onCycle = (dir) => this.cycleWeapon(dir);
     this.input.onAbility = (slot) => this.useAbility(slot);
+    this.input.onInspect = () => this.weapon.startInspect();
     this.input.onLockChange = (locked) => {
       if (locked) {
         this.sfx.resume();
@@ -238,7 +240,7 @@ export class Game {
     window.addEventListener("keydown", (e) => {
       // Don't steal keys while typing into any input / select.
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-      if (e.code === "KeyY" && this.input.locked && !this.local.dead && !this.inIntermission) {
+      if (e.code === settings.keymap.chat && this.input.locked && !this.local.dead && !this.inIntermission) {
         e.preventDefault();
         this.openChat();
         return;
@@ -271,25 +273,9 @@ export class Game {
   // ---- Pause / death menu -----------------------------------------------
 
   private initPauseMenu() {
-    // Pre-fill name and class from localStorage.
+    // Pre-fill name and class from localStorage. Skin + cosmetics live in the Locker.
     this.pmName.value = localStorage.getItem("drunkr.name") ?? "";
     this.pmClass.value = localStorage.getItem("drunkr.class") ?? "wind";
-
-    // Build skin swatches.
-    const SKIN_HUES = [0.0, 0.08, 0.13, 0.33, 0.5, 0.58, 0.75, 0.85];
-    for (const hue of SKIN_HUES) {
-      const btn = document.createElement("button");
-      btn.className = "skin";
-      btn.style.background = `hsl(${hue * 360}, 85%, 55%)`;
-      if (Math.abs(hue - this.pmSelectedHue) < 0.001) btn.classList.add("active");
-      btn.addEventListener("click", () => {
-        this.pmSelectedHue = hue;
-        localStorage.setItem("drunkr.skin", String(hue));
-        this.pmSkinsEl.querySelectorAll(".skin").forEach((s) => s.classList.remove("active"));
-        btn.classList.add("active");
-      });
-      this.pmSkinsEl.appendChild(btn);
-    }
 
     // Name changes save immediately.
     this.pmName.addEventListener("input", () => {
@@ -297,41 +283,30 @@ export class Game {
       if (n) localStorage.setItem("drunkr.name", n);
     });
 
-    // Class changes save immediately.
-    this.pmClass.addEventListener("change", () =>
-      localStorage.setItem("drunkr.class", this.pmClass.value));
-
-    // Music controls.
-    this.pmMusicOn.checked = settings.musicEnabled;
-    this.pmMusicVol.value = String(Math.round(settings.musicVolume * 100));
-    this.pmMusicVal.textContent = this.pmMusicVol.value;
-
-    this.pmMusicOn.addEventListener("change", () => {
-      settings.musicEnabled = this.pmMusicOn.checked;
-      this.music?.setEnabled(settings.musicEnabled);
-      // Keep the main-menu toggle in sync.
-      const el = document.getElementById("set-music-on") as HTMLInputElement | null;
-      if (el) el.checked = settings.musicEnabled;
-    });
-    this.pmMusicVol.addEventListener("input", () => {
-      const v = Number(this.pmMusicVol.value);
-      this.pmMusicVal.textContent = String(v);
-      settings.musicVolume = v / 100;
-      this.music?.setVolume(settings.musicVolume);
-      const el = document.getElementById("set-music-vol") as HTMLInputElement | null;
-      if (el) { el.value = String(v); (document.getElementById("set-music-val")!).textContent = String(v); }
+    // Locker: weapon skins live-update the held viewmodel; accessory/skin
+    // changes for the avatar apply on the next respawn (broadcast via prefs at join).
+    document.getElementById("pm-open-locker")!.addEventListener("click", () => {
+      this.locker.open(() => this.weapon.refreshSkin());
     });
 
-    // SFX volume.
-    this.pmSfxVol.value = String(Math.round(settings.sfxVolume * 100));
-    this.pmSfxVal.textContent = this.pmSfxVol.value;
+    // Class changes save immediately and hotswap on the next respawn.
+    this.pmClass.addEventListener("change", () => {
+      localStorage.setItem("drunkr.class", this.pmClass.value);
+      this.net.send({ t: "class", cls: this.pmClass.value });
+      this.hud.toast("Class applies on next spawn", "info");
+    });
+
+    // Shared settings UI (same component as the lobby), with live audio/graphics
+    // hooks into this game's instances.
     this.sfx.setVolume(settings.sfxVolume);
-    this.pmSfxVol.addEventListener("input", () => {
-      const v = Number(this.pmSfxVol.value);
-      this.pmSfxVal.textContent = String(v);
-      settings.sfxVolume = v / 100;
-      this.sfx.setVolume(settings.sfxVolume);
-      saveSettings();
+    this.settingsPanel = new SettingsPanel(document.getElementById("pm-settings")!, {
+      onMusicEnabled: (on) => this.music?.setEnabled(on),
+      onMusicVol: (v) => this.music?.setVolume(v),
+      onSfxVol: (v) => this.sfx.setVolume(v),
+      onQuality: (q) => {
+        this.renderer.setPixelHeight(QUALITY_HEIGHT[q]);
+        this.particles.setScale(this.renderer.renderHeight);
+      },
     });
 
     // Resume button re-locks the pointer (which hides the menu via onLockChange).
@@ -369,6 +344,7 @@ export class Game {
   }
 
   private showPauseMenu(isDead: boolean) {
+    this.settingsPanel.refresh();
     this.pmTitle.textContent = isDead ? "ELIMINATED" : "PAUSED";
     this.pmTitle.style.color = isDead ? "var(--neon-pink)" : "var(--neon-cyan)";
     this.pmResumeBtn.classList.toggle("hidden", isDead);
@@ -434,7 +410,7 @@ export class Game {
         const killer = this.roster.get(msg.killer)?.name ?? "?";
         const victim = this.roster.get(msg.victim)?.name ?? "?";
         const assistNames = (msg.assists ?? []).map((id) => this.roster.get(id)?.name ?? "?");
-        this.hud.addKill(killer, victim, msg.head, assistNames);
+        this.hud.addKill(killer, victim, msg.head, assistNames, msg.multi ?? 1);
         // Death dissolve in the victim's hue (skip the local player — no avatar).
         if (msg.victim !== this.localId) {
           const vp = this.remotes.position(msg.victim);
@@ -444,6 +420,7 @@ export class Game {
         if (msg.killer === this.localId && msg.victim !== this.localId) {
           this.sfx.kill();
           this.hud.killConfirm(`killed ${victim}`, "kill");
+          if ((msg.multi ?? 1) >= 2) this.hud.multiKill(msg.multi!);
           // Kill reward: refill the magazine of the weapon we're holding. The
           // +25 HP refund is applied server-side and arrives via the snapshot.
           this.weapon.refillCurrent();
@@ -454,6 +431,8 @@ export class Game {
           this.local.dead = true;
           this.resetAbilityCooldowns();
           this.hud.setDead(true);
+          const fell = msg.killer === msg.victim;
+          this.hud.setDeathInfo(fell ? null : killer, msg.head, fell);
           this.protectActive = false;
           this.shockwavePending = false;
           this.hud.setProtected(false);
@@ -571,6 +550,10 @@ export class Game {
       case "chat":
         this.hud.addChatMessage(msg.name, msg.text);
         break;
+      case "ping":
+        // Echo back so the server can measure our round-trip latency.
+        this.net.send({ t: "pong", ts: msg.ts });
+        break;
     }
   }
 
@@ -584,8 +567,14 @@ export class Game {
     this.interWinner.textContent = `${msg.winnerName} WINS`;
 
     const sorted = [...msg.scores].sort((a, b) => b.kills - a.kills);
+    const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : "—");
     this.interScoreBody.innerHTML = sorted
-      .map((p) => `<tr class="${p.id === this.localId ? "me" : ""}"><td>${p.admin ? "★ " : ""}${p.name}</td><td class="r">${p.kills}</td><td class="r">${p.deaths}</td><td class="r">${p.assists ?? 0}</td></tr>`)
+      .map((p) => {
+        const fired = p.shotsFired ?? 0, hit = p.shotsHit ?? 0, hs = p.headshots ?? 0;
+        return `<tr class="${p.id === this.localId ? "me" : ""}"><td>${p.admin ? "★ " : ""}${esc(p.name)}</td>` +
+          `<td class="r">${p.kills}</td><td class="r">${p.deaths}</td><td class="r">${p.assists ?? 0}</td>` +
+          `<td class="r">${pct(hit, fired)}</td><td class="r">${pct(hs, hit)}</td></tr>`;
+      })
       .join("");
 
     this.interVoteBtns.innerHTML = "";
@@ -849,6 +838,15 @@ export class Game {
     } else {
       this.bombPromptEl.classList.add("hidden");
     }
+  }
+
+  /** Scroll-wheel weapon cycle through the always-available loadout. */
+  private cycleWeapon(dir: 1 | -1) {
+    if (this.local.dead) return;
+    const order = ["ak", "sniper", "shotgun", "katana"];
+    const cur = order.indexOf(this.weapon.def.id);
+    const next = order[((cur < 0 ? 0 : cur) + dir + order.length) % order.length];
+    if (next !== this.weapon.def.id) this.switchWeapon(next);
   }
 
   private switchWeapon(id: string) {
@@ -1171,6 +1169,8 @@ export class Game {
   private syncLocal(p: PlayerState) {
     const wasDead = this.local.dead;
     this.local.dead = p.dead;
+    // Reflect server-applied class changes (hotswap takes effect on respawn).
+    if (p.cls && p.cls !== this.localCls) this.localCls = p.cls;
     if (!p.dead && wasDead) { this.hud.setDead(false); this.clearDeathTracer(); }
     if (p.dead && !wasDead) { this.hud.setDead(true); this.resetAbilityCooldowns(); }
     this.hud.setHealth(p.health);
@@ -1220,6 +1220,40 @@ export class Game {
     this.deathTracer = g;
   }
 
+  /**
+   * Slinger grapple rope: a black line from the player's hand to the anchor
+   * point, refreshed every frame while the grapple is reeling.
+   */
+  private updateGrappleLine() {
+    const anchor = this.local.grappling ? this.local.grappleAnchorPos : null;
+    if (anchor) {
+      // Start the rope just below/right of the eye so it reads as a hand throw.
+      const cam = new THREE.Vector3();
+      this.renderer.camera.getWorldPosition(cam);
+      const right = new THREE.Vector3(Math.cos(this.local.yaw), 0, -Math.sin(this.local.yaw));
+      const from = cam.addScaledVector(right, 0.25).add(new THREE.Vector3(0, -0.25, 0));
+
+      if (!this.grappleLine) {
+        const geo = new THREE.BufferGeometry().setFromPoints([from, anchor]);
+        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x000000 }));
+        line.raycast = () => {};
+        line.renderOrder = 5;
+        this.renderer.scene.add(line);
+        this.grappleLine = line;
+      } else {
+        const pos = this.grappleLine.geometry.attributes.position as THREE.BufferAttribute;
+        pos.setXYZ(0, from.x, from.y, from.z);
+        pos.setXYZ(1, anchor.x, anchor.y, anchor.z);
+        pos.needsUpdate = true;
+      }
+    } else if (this.grappleLine) {
+      this.renderer.scene.remove(this.grappleLine);
+      this.grappleLine.geometry.dispose();
+      (this.grappleLine.material as THREE.Material).dispose();
+      this.grappleLine = null;
+    }
+  }
+
   private clearDeathTracer() {
     if (!this.deathTracer) return;
     this.renderer.scene.remove(this.deathTracer);
@@ -1249,6 +1283,7 @@ export class Game {
 
     this.fps = this.fps * 0.9 + (1 / Math.max(dt, 0.001)) * 0.1;
     this.hud.setFps(settings.showFps ? Math.round(this.fps) : null);
+    this.hud.setPing(this.roster.get(this.localId)?.ping ?? null);
 
     // Update 3D audio listener to match the camera.
     {
@@ -1317,6 +1352,15 @@ export class Game {
     }
     this.weapon.update(dt, !this.inIntermission && this.input.firing && this.input.locked, this.input.ads);
     this.remotes.update(dt);
+    this.updateGrappleLine();
+    // Particle accessories (spark crown, etc.) trail above visible remotes.
+    for (const p of this.roster.values()) {
+      if (p.id === this.localId || p.dead || !p.accessory) continue;
+      const col = ACCESSORIES[p.accessory]?.particle;
+      if (col === undefined) continue;
+      const pos = this.remotes.position(p.id);
+      if (pos) this.particles.trail({ x: pos.x, y: pos.y + ACCESSORY_EMIT_Y, z: pos.z }, col, 1);
+    }
     this.updateAbilityHud();
 
     // Bomb mode: E key state + HUD prompts.
@@ -1369,6 +1413,11 @@ export class Game {
     this.renderer.render();
     requestAnimationFrame(() => this.loop());
   }
+}
+
+/** Escape user-supplied text before inserting via innerHTML. */
+function esc(s: string): string {
+  return s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!));
 }
 
 // Re-export for callers that want the constant without importing shared directly.

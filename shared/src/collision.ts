@@ -57,18 +57,44 @@ interface OBBY {
   cos: number; sin: number;           // cos/sin of the yaw
 }
 
+/** A non-box primitive (cylinder / sphere / wedge), collided to match its shape
+ * rather than its enclosing box. Cylinders/spheres ignore yaw (symmetric in XZ);
+ * wedges use it to orient the slope. X/Z tilt still falls back to an AABB. */
+interface ShapeCollider {
+  kind: "cylinder" | "sphere" | "wedge";
+  cx: number; cy: number; cz: number;
+  hx: number; hy: number; hz: number;
+  cos: number; sin: number;
+}
+
 export class CollisionWorld {
   readonly boxes: AABB[];
   /** Y-rotated boxes, collided as oriented boxes (not their enclosing AABB). */
   readonly obbs: OBBY[];
+  /** Cylinders / spheres / wedges, collided to their actual silhouette. */
+  readonly shapes: ShapeCollider[];
   private pads: PadZone[];
   private ramps: RampZone[];
 
   constructor(map: GameMap) {
     this.boxes = [];
     this.obbs = [];
+    this.shapes = [];
     for (const b of map.boxes) {
       const r = b.rot;
+      const tilted = !!r && (Math.abs(r.x) > 1e-4 || Math.abs(r.z) > 1e-4);
+      // Non-box primitives get shape-accurate collision (unless X/Z-tilted, which
+      // falls back to the enclosing AABB as before).
+      if (b.shape && b.shape !== "box" && !tilted) {
+        const yaw = r ? r.y : 0;
+        this.shapes.push({
+          kind: b.shape as ShapeCollider["kind"],
+          cx: b.pos.x, cy: b.pos.y, cz: b.pos.z,
+          hx: b.size.x / 2, hy: b.size.y / 2, hz: b.size.z / 2,
+          cos: Math.cos(yaw), sin: Math.sin(yaw),
+        });
+        continue;
+      }
       // Pure Y rotation → oriented box. No rotation (or X/Z rotation) → AABB
       // (X/Z tilt still falls back to the enclosing AABB, as before).
       if (r && Math.abs(r.x) < 1e-4 && Math.abs(r.z) < 1e-4 && Math.abs(r.y) > 1e-4) {
@@ -231,7 +257,136 @@ export class CollisionWorld {
       hitWall = hitWall || r.hitWall;
     }
 
+    // --- Shape primitives (cylinder / sphere / wedge) ---
+    for (const sc of this.shapes) {
+      const r = sc.kind === "cylinder" ? this.resolveCylinder(pos, vel, radius, height, sc, stepHeight)
+        : sc.kind === "sphere" ? this.resolveSphere(pos, vel, radius, height, sc)
+          : this.resolveWedge(pos, vel, radius, height, sc, stepHeight);
+      grounded = grounded || r.grounded;
+      hitWall = hitWall || r.hitWall;
+    }
+
     return { grounded, hitWall };
+  }
+
+  /** Player capsule vs an upright (elliptical→circular) cylinder. */
+  private resolveCylinder(
+    pos: Vec3, vel: Vec3, radius: number, height: number, sc: ShapeCollider, step: number,
+  ): { grounded: boolean; hitWall: boolean } {
+    const feet = pos.y, head = pos.y + height;
+    if (head <= sc.cy - sc.hy || feet >= sc.cy + sc.hy) return { grounded: false, hitWall: false };
+    const rc = (sc.hx + sc.hz) / 2; // circular approximation of the XZ ellipse
+    const dx = pos.x - sc.cx, dz = pos.z - sc.cz;
+    const d = Math.hypot(dx, dz);
+    const horizPen = rc + radius - d;
+    if (horizPen <= 0) return { grounded: false, hitWall: false };
+
+    const penUp = sc.cy + sc.hy - feet;
+    const penDown = head - (sc.cy - sc.hy);
+    const canStep = penUp <= step && vel.y <= 0.5;
+    if (canStep && penUp <= horizPen && penUp <= penDown) {
+      pos.y = sc.cy + sc.hy;
+      if (vel.y < 0) vel.y = 0;
+      return { grounded: true, hitWall: false };
+    }
+    if (penDown <= horizPen) {
+      pos.y = sc.cy - sc.hy - height;
+      if (vel.y > 0) vel.y = 0;
+      return { grounded: false, hitWall: false };
+    }
+    const nx = d < 1e-6 ? 1 : dx / d, nz = d < 1e-6 ? 0 : dz / d;
+    pos.x += nx * horizPen;
+    pos.z += nz * horizPen;
+    const vn = vel.x * nx + vel.z * nz;
+    if (vn < 0) { vel.x -= vn * nx; vel.z -= vn * nz; }
+    return { grounded: false, hitWall: true };
+  }
+
+  /** Player capsule vs a sphere (ellipsoid approximated by its mean radius):
+   *  push out along the line from the sphere centre to the nearest point on the
+   *  player's vertical axis, so you can round it off and stand on its top. */
+  private resolveSphere(
+    pos: Vec3, vel: Vec3, radius: number, height: number, sc: ShapeCollider,
+  ): { grounded: boolean; hitWall: boolean } {
+    const R = (sc.hx + sc.hy + sc.hz) / 3;
+    const feet = pos.y, head = pos.y + height;
+    const qy = Math.max(feet, Math.min(head, sc.cy)); // closest axis point in Y
+    const dx = pos.x - sc.cx, dy = qy - sc.cy, dz = pos.z - sc.cz;
+    const d = Math.hypot(dx, dy, dz);
+    const pen = R + radius - d;
+    if (pen <= 0) return { grounded: false, hitWall: false };
+    const nx = d < 1e-6 ? 0 : dx / d;
+    const ny = d < 1e-6 ? 1 : dy / d;
+    const nz = d < 1e-6 ? 0 : dz / d;
+    pos.x += nx * pen;
+    pos.y += ny * pen;
+    pos.z += nz * pen;
+    const vn = vel.x * nx + vel.y * ny + vel.z * nz;
+    if (vn < 0) { vel.x -= vn * nx; vel.y -= vn * ny; vel.z -= vn * nz; }
+    const grounded = ny > 0.5;
+    if (grounded && vel.y < 0) vel.y = 0;
+    return { grounded, hitWall: Math.abs(ny) < 0.5 };
+  }
+
+  /** Player capsule vs a wedge (right-triangular prism). The hypotenuse is a
+   *  walkable slope rising toward local -x; the other faces act as walls. */
+  private resolveWedge(
+    pos: Vec3, vel: Vec3, radius: number, height: number, sc: ShapeCollider, step: number,
+  ): { grounded: boolean; hitWall: boolean } {
+    const feet = pos.y, head = pos.y + height;
+    if (head <= sc.cy - sc.hy || feet >= sc.cy + sc.hy) return { grounded: false, hitWall: false };
+
+    // World → local XZ (same convention as resolveOBB).
+    const rx = pos.x - sc.cx, rz = pos.z - sc.cz;
+    const lx = rx * sc.cos - rz * sc.sin;
+    const lz = rx * sc.sin + rz * sc.cos;
+
+    const clx = lx < -sc.hx ? -sc.hx : lx > sc.hx ? sc.hx : lx;
+    const clz = lz < -sc.hz ? -sc.hz : lz > sc.hz ? sc.hz : lz;
+    const ddx = lx - clx, ddz = lz - clz;
+    const distSq = ddx * ddx + ddz * ddz;
+    const inside = distSq < 1e-8;
+    if (!inside && distSq >= radius * radius) return { grounded: false, hitWall: false };
+
+    // Slope surface height at the player's x: full height at local -x, zero at +x.
+    const surfY = sc.cy - sc.hy * (clx / sc.hx);
+    if (feet > surfY + 0.05) return { grounded: false, hitWall: false }; // above the slope
+
+    const penUp = surfY - feet;
+    const penDown = head - (sc.cy - sc.hy);
+
+    let nlx: number, nlz: number, horizPen: number;
+    if (inside) {
+      const dxp = sc.hx - lx, dxn = lx + sc.hx, dzp = sc.hz - lz, dzn = lz + sc.hz;
+      const m = Math.min(dxp, dxn, dzp, dzn);
+      if (m === dxp) { nlx = 1; nlz = 0; horizPen = dxp + radius; }
+      else if (m === dxn) { nlx = -1; nlz = 0; horizPen = dxn + radius; }
+      else if (m === dzp) { nlx = 0; nlz = 1; horizPen = dzp + radius; }
+      else { nlx = 0; nlz = -1; horizPen = dzn + radius; }
+    } else {
+      const dist = Math.sqrt(distSq);
+      nlx = ddx / dist; nlz = ddz / dist;
+      horizPen = radius - dist;
+    }
+
+    const canStep = penUp <= step && penUp >= -0.06 && vel.y <= 0.5;
+    if (canStep && penUp <= horizPen && penUp <= penDown) {
+      pos.y = surfY;
+      if (vel.y < 0) vel.y = 0;
+      return { grounded: true, hitWall: false };
+    }
+    if (penDown <= horizPen && penDown >= 0) {
+      pos.y = sc.cy - sc.hy - height;
+      if (vel.y > 0) vel.y = 0;
+      return { grounded: false, hitWall: false };
+    }
+    const wx = nlx * sc.cos + nlz * sc.sin;
+    const wz = -nlx * sc.sin + nlz * sc.cos;
+    pos.x += wx * horizPen;
+    pos.z += wz * horizPen;
+    const vn = vel.x * wx + vel.z * wz;
+    if (vn < 0) { vel.x -= vn * wx; vel.z -= vn * wz; }
+    return { grounded: false, hitWall: true };
   }
 
   /** Move along X and resolve box overlaps. Returns true if a wall was hit.
@@ -269,7 +424,30 @@ export class CollisionWorld {
 
   private overlapsAny(pos: Vec3, radius: number, height: number): boolean {
     for (const b of this.boxes) if (this.overlaps(pos, radius, height, b)) return true;
+    for (const sc of this.shapes) if (this.overlapsShape(pos, radius, height, sc)) return true;
     return false;
+  }
+
+  /** Cheap solid test of the player capsule against a shape (for step-up clearance). */
+  private overlapsShape(pos: Vec3, radius: number, height: number, sc: ShapeCollider): boolean {
+    const feet = pos.y, head = pos.y + height;
+    if (head <= sc.cy - sc.hy || feet >= sc.cy + sc.hy) return false;
+    if (sc.kind === "sphere") {
+      const R = (sc.hx + sc.hy + sc.hz) / 3;
+      const qy = Math.max(feet, Math.min(head, sc.cy));
+      return Math.hypot(pos.x - sc.cx, qy - sc.cy, pos.z - sc.cz) < R + radius;
+    }
+    const rx = pos.x - sc.cx, rz = pos.z - sc.cz;
+    const lx = rx * sc.cos - rz * sc.sin;
+    const lz = rx * sc.sin + rz * sc.cos;
+    if (sc.kind === "cylinder") {
+      const rc = (sc.hx + sc.hz) / 2;
+      return Math.hypot(rx, rz) < rc + radius;
+    }
+    // wedge: inside the XZ footprint (expanded) and below the slope surface.
+    if (lx < -sc.hx - radius || lx > sc.hx + radius || lz < -sc.hz - radius || lz > sc.hz + radius) return false;
+    const clx = lx < -sc.hx ? -sc.hx : lx > sc.hx ? sc.hx : lx;
+    return feet <= sc.cy - sc.hy * (clx / sc.hx) + 0.05;
   }
 
   /**
@@ -370,6 +548,31 @@ export class CollisionWorld {
         const lx = rx * o.cos - rz * o.sin;
         const lz = rx * o.sin + rz * o.cos;
         if (lx > -o.hx && lx < o.hx && lz > -o.hz && lz < o.hz) return true;
+      }
+    }
+    // Shape primitives: sample points against the actual silhouette.
+    for (const sc of this.shapes) {
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        const px = a.x + dx * t, py = a.y + dy * t, pz = a.z + dz * t;
+        if (py <= sc.cy - sc.hy || py >= sc.cy + sc.hy) {
+          if (sc.kind !== "sphere") continue;
+        }
+        if (sc.kind === "sphere") {
+          const R = (sc.hx + sc.hy + sc.hz) / 3;
+          if (Math.hypot(px - sc.cx, py - sc.cy, pz - sc.cz) < R) return true;
+          continue;
+        }
+        const rx = px - sc.cx, rz = pz - sc.cz;
+        const lx = rx * sc.cos - rz * sc.sin;
+        const lz = rx * sc.sin + rz * sc.cos;
+        if (sc.kind === "cylinder") {
+          const rc = (sc.hx + sc.hz) / 2;
+          if (Math.hypot(rx, rz) < rc) return true;
+        } else { // wedge
+          if (lx > -sc.hx && lx < sc.hx && lz > -sc.hz && lz < sc.hz &&
+              py - sc.cy < -sc.hy * (lx / sc.hx)) return true;
+        }
       }
     }
     return false;
