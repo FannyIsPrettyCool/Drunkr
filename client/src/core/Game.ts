@@ -1410,8 +1410,12 @@ export class Game {
             this.renderer.camera.getWorldDirection(look);
             const toFlash = bpos.clone().sub(cam).normalize();
             const facing = look.dot(toFlash);
+            // The cone fans out FROM the decoy TOWARD the shooter, so test the
+            // player's position relative to the burst — not their look vector
+            // (which points back at the decoy and would always fail the cone).
             const cx = Math.sin(b.towardYaw), cz = Math.cos(b.towardYaw);
-            const inCone = new THREE.Vector3(cx, 0, cz).dot(look) > 0.3;
+            const toPlayer = new THREE.Vector3(cam.x - bpos.x, 0, cam.z - bpos.z).normalize();
+            const inCone = new THREE.Vector3(cx, 0, cz).dot(toPlayer) > 0.3;
             if (facing > 0.2 && inCone && !this.losBlocked(cam, bpos)) {
               this.hud.blind(Math.round(800 * (1 - dist / 10) * facing));
             }
