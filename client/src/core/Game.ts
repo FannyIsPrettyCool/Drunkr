@@ -19,6 +19,7 @@ import {
   GRAPPLE,
   WALLKICK,
   RECALL,
+  DECOY,
   type AbilityId,
   type DecoyState,
   type PlayerState,
@@ -36,6 +37,7 @@ import { SpeedLines } from "../render/SpeedLines.js";
 import { Arena } from "../world/Arena.js";
 import { LocalPlayer } from "../entities/LocalPlayer.js";
 import { RemotePlayers } from "../entities/RemotePlayers.js";
+import { DecoyAvatar } from "../entities/Decoy.js";
 import { Weapon } from "../weapons/Weapon.js";
 import { Input } from "../input/Input.js";
 import { HUD, killBrag } from "../ui/HUD.js";
@@ -105,8 +107,8 @@ export class Game {
   private abilityCd: Record<string, number> = {};
   /** Live grenade meshes by projectile id. */
   private projMeshes = new Map<number, THREE.Mesh>();
-  private decoyMeshes = new Map<number, THREE.Group>();
-  private decoyBursting = new Map<number, { group: THREE.Group; start: number; towardYaw: number; hue: number }>();
+  private decoyMeshes = new Map<number, DecoyAvatar>();
+  private decoyBursting = new Map<number, { avatar: DecoyAvatar; start: number; towardYaw: number; hue: number }>();
   private slowTimer = 0;
   private losRay = new THREE.Raycaster();
   private aimRaycaster = new THREE.Raycaster();
@@ -312,6 +314,13 @@ export class Game {
       );
     });
 
+    // Muffle spatial sounds that have a wall between them and the listener.
+    this.sfx.setOcclusionTest((x, y, z) => {
+      const cam = new THREE.Vector3();
+      this.renderer.camera.getWorldPosition(cam);
+      return this.losBlocked(cam, new THREE.Vector3(x, y, z));
+    });
+
     // Shared settings UI (same component as the lobby), with live audio/graphics
     // hooks into this game's instances.
     this.sfx.setVolume(settings.sfxVolume);
@@ -489,12 +498,11 @@ export class Game {
         }
         break;
       case "decoy_burst": {
-        const existing = this.decoyMeshes.get(msg.id);
-        const group = existing ?? this.buildDecoyGroup(msg.hue);
-        if (!existing) this.renderer.scene.add(group);
+        let avatar = this.decoyMeshes.get(msg.id);
+        if (!avatar) { avatar = new DecoyAvatar(msg.hue); this.renderer.scene.add(avatar.group); }
         this.decoyMeshes.delete(msg.id);
-        group.position.set(msg.pos.x, msg.pos.y, msg.pos.z);
-        this.decoyBursting.set(msg.id, { group, start: performance.now(), towardYaw: msg.towardYaw, hue: msg.hue });
+        avatar.group.position.set(msg.pos.x, msg.pos.y, msg.pos.z);
+        this.decoyBursting.set(msg.id, { avatar, start: performance.now(), towardYaw: msg.towardYaw, hue: msg.hue });
         break;
       }
       case "explosion":
@@ -664,10 +672,10 @@ export class Game {
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
     }
-    const decoyGroups = [...this.decoyMeshes.values(), ...[...this.decoyBursting.values()].map(b => b.group)];
-    for (const group of decoyGroups) {
-      this.renderer.scene.remove(group);
-      group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+    const decoyAvatars = [...this.decoyMeshes.values(), ...[...this.decoyBursting.values()].map(b => b.avatar)];
+    for (const avatar of decoyAvatars) {
+      this.renderer.scene.remove(avatar.group);
+      avatar.dispose();
     }
     this.projMeshes.clear();
     this.decoyMeshes.clear();
@@ -977,12 +985,12 @@ export class Game {
       case "bloodlust":
         this.net.send({ t: "ability", ability: "bloodlust" });
         this.startBloodlust();
-        this.sfx.fortify();
+        this.sfx.bloodlust();
         this.hud.banner("BLOODLUST");
         break;
       case "siphon":
         this.net.send({ t: "ability", ability: "siphon" });
-        this.sfx.shockwave();
+        this.sfx.siphon();
         break;
       case "grapple": {
         // Reel toward the surface we're looking at (if any within range).
@@ -992,25 +1000,25 @@ export class Game {
         const hit = this.aimRaycaster.intersectObjects(this.arena.colliders, false)[0];
         if (hit) {
           this.local.startGrapple(hit.point.x, hit.point.y, hit.point.z);
-          this.sfx.dash();
+          this.sfx.grapple();
           this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 8);
         } else used = false;
         break;
       }
       case "wallkick":
         used = this.tryWallKick();
-        if (used) this.sfx.dash();
+        if (used) this.sfx.wallkick();
         break;
       case "slipstream":
         this.local.slipstream();
-        this.sfx.dash();
+        this.sfx.slipstream();
         this.particles.trail({ x: this.local.pos.x, y: this.local.pos.y + 1, z: this.local.pos.z }, 0x18e0ff, 10);
         break;
       case "recall": {
         const before = { x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z };
         this.local.recall(RECALL.rewindMs);
         this.net.send({ t: "ability", ability: "recall" });
-        this.sfx.blink();
+        this.sfx.recall();
         const col = new THREE.Color().setHSL(this.roster.get(this.localId)?.hue ?? 0.5, 0.85, 0.55).getHex();
         this.particles.spawnBurst(before, col);
         this.particles.spawnBurst({ x: this.local.pos.x, y: this.local.pos.y, z: this.local.pos.z }, col);
@@ -1018,25 +1026,25 @@ export class Game {
       }
       case "timebubble":
         this.net.send({ t: "ability", ability: "timebubble", origin: this.eyePos() });
-        this.sfx.cloak();
+        this.sfx.timebubble();
         break;
       case "pull":
         this.net.send({ t: "ability", ability: "pull", origin: this.eyePos() });
-        this.sfx.shockwave();
+        this.sfx.pull();
         break;
       case "reflect":
         this.net.send({ t: "ability", ability: "reflect" });
-        this.sfx.fortify();
+        this.sfx.reflect();
         this.hud.banner("REFLECT");
         break;
       case "repulse":
         this.net.send({ t: "ability", ability: "repulse", origin: this.eyePos() });
-        this.sfx.shockwave();
+        this.sfx.repulse();
         break;
       case "decoy": {
         const { o, d } = this.aimRay();
         this.net.send({ t: "ability", ability: "decoy", origin: o, dir: d });
-        this.sfx.cloak();
+        this.sfx.decoy();
         break;
       }
     }
@@ -1078,62 +1086,24 @@ export class Game {
     return false;
   }
 
-  /** Build a static player-model group for a Mirage decoy. */
-  private buildDecoyGroup(hue: number): THREE.Group {
-    const col = new THREE.Color().setHSL(hue, 0.85, 0.55);
-    const emissive = col.clone().multiplyScalar(0.5);
-    const bodyMat = new THREE.MeshStandardMaterial({ color: col, emissive, emissiveIntensity: 0.6, roughness: 0.5, metalness: 0.2 });
-    const headMat = new THREE.MeshStandardMaterial({ color: 0x0a0c18, emissive: col, emissiveIntensity: 0.4 });
-    const visorMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const g = new THREE.Group();
-    // Torso
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.3), bodyMat);
-    torso.position.y = MOVE.height * 0.58;
-    g.add(torso);
-    // Head
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.34), headMat);
-    head.position.y = MOVE.height * 0.9;
-    g.add(head);
-    // Visor
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.04), visorMat);
-    visor.position.set(0, MOVE.height * 0.9, 0.18);
-    g.add(visor);
-    // Legs
-    const legGeo = new THREE.BoxGeometry(0.2, 0.8, 0.24);
-    const legL = new THREE.Mesh(legGeo, bodyMat);
-    legL.position.set(-0.15, MOVE.height * 0.42 - 0.4, 0);
-    const legR = new THREE.Mesh(legGeo, bodyMat);
-    legR.position.set(0.15, MOVE.height * 0.42 - 0.4, 0);
-    g.add(legL, legR);
-    // Arms
-    const armGeo = new THREE.BoxGeometry(0.15, 0.5, 0.16);
-    const armL = new THREE.Mesh(armGeo, bodyMat);
-    armL.position.set(-0.34, MOVE.height * 0.64, 0);
-    const armR = new THREE.Mesh(armGeo, bodyMat);
-    armR.position.set(0.34, MOVE.height * 0.64, 0);
-    g.add(armL, armR);
-    return g;
-  }
-
   /** Reconcile rendered Mirage decoy holograms with the snapshot. */
   private syncDecoys(decoys: DecoyState[]) {
     const seen = new Set<number>();
     for (const d of decoys) {
       seen.add(d.id);
       if (this.decoyBursting.has(d.id)) continue; // mid-burst, don't re-create
-      let group = this.decoyMeshes.get(d.id);
-      if (!group) {
-        group = this.buildDecoyGroup(d.hue);
-        this.renderer.scene.add(group);
-        this.decoyMeshes.set(d.id, group);
+      let avatar = this.decoyMeshes.get(d.id);
+      if (!avatar) {
+        avatar = new DecoyAvatar(d.hue);
+        this.renderer.scene.add(avatar.group);
+        this.decoyMeshes.set(d.id, avatar);
       }
-      group.position.set(d.pos.x, d.pos.y, d.pos.z);
-      group.rotation.y = d.yaw;
+      avatar.setTransform(d.pos.x, d.pos.y, d.pos.z, d.yaw);
     }
-    for (const [id, group] of this.decoyMeshes) {
+    for (const [id, avatar] of this.decoyMeshes) {
       if (!seen.has(id) && !this.decoyBursting.has(id)) {
-        this.renderer.scene.remove(group);
-        group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+        this.renderer.scene.remove(avatar.group);
+        avatar.dispose();
         this.decoyMeshes.delete(id);
       }
     }
@@ -1173,6 +1143,7 @@ export class Game {
 
   private onExplosion(kind: "flash" | "frag" | "siphon", pos: THREE.Vector3) {
     if (kind === "siphon") this.sfx.drainAt(pos.x, pos.y, pos.z);
+    else if (kind === "flash") this.sfx.flashBoomAt(pos.x, pos.y, pos.z);
     else this.sfx.boomAt(pos.x, pos.y, pos.z);
 
     const radius = kind === "frag" ? GRENADE.fragRadius : kind === "siphon" ? SIPHON.radius : 5;
@@ -1199,7 +1170,9 @@ export class Game {
         const facing = look.dot(toFlash);
         if (facing > 0.1 && !this.losBlocked(cam, pos)) {
           // 2–3s depending on how directly you were looking at it.
-          this.hud.blind(GRENADE.flashBlindMs * (0.7 + 0.3 * facing));
+          const ms = GRENADE.flashBlindMs * (0.7 + 0.3 * facing);
+          this.hud.blind(ms);
+          this.sfx.tinnitus(ms);
         }
       }
     }
@@ -1393,43 +1366,49 @@ export class Game {
     }
     this.particles.update(dt);
 
+    // Walk-cycle the live (non-bursting) decoys each frame.
+    for (const avatar of this.decoyMeshes.values()) avatar.update(dt);
+
     // Decoy burst animation: rotate decoy to face shooter over 200ms, then explode.
     for (const [id, b] of this.decoyBursting) {
       const elapsed = now - b.start;
       if (elapsed < 200) {
-        // Lerp yaw toward towardYaw.
+        // Ease yaw toward the shooter (shortest way round).
         const t = elapsed / 200;
-        const dy = b.towardYaw - b.group.rotation.y;
-        const shortest = ((dy + Math.PI) % (Math.PI * 2)) - Math.PI;
-        b.group.rotation.y += shortest * Math.min(t, 1);
+        let dy = b.towardYaw - b.avatar.group.rotation.y;
+        dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+        b.avatar.group.rotation.y += dy * Math.min(1, t);
       } else {
         // Detonate.
+        const bpos = b.avatar.group.position;
         const hueCol = new THREE.Color().setHSL(b.hue, 0.85, 0.55).getHex();
-        this.particles.decoyBurst({ x: b.group.position.x, y: b.group.position.y, z: b.group.position.z }, b.towardYaw, hueCol);
-        // Flash-blind local player if they're looking at the burst from within range.
+        this.particles.decoyBurst({ x: bpos.x, y: bpos.y, z: bpos.z }, b.towardYaw, hueCol);
+        this.sfx.decoyBurstAt(bpos.x, bpos.y, bpos.z);
+        // Flash-blind the local player if they're looking toward the burst and
+        // standing in the cone that fans out toward the shooter. The cone is an
+        // angular test, so it reaches any distance and widens with range — only
+        // a wall (LOS) stops it.
         if (!this.local.dead) {
           const cam = new THREE.Vector3();
           this.renderer.camera.getWorldPosition(cam);
-          const bpos = b.group.position;
-          const dist = cam.distanceTo(bpos);
-          if (dist < 10) {
-            const look = new THREE.Vector3();
-            this.renderer.camera.getWorldDirection(look);
-            const toFlash = bpos.clone().sub(cam).normalize();
-            const facing = look.dot(toFlash);
-            // The cone fans out FROM the decoy TOWARD the shooter, so test the
-            // player's position relative to the burst — not their look vector
-            // (which points back at the decoy and would always fail the cone).
-            const cx = Math.sin(b.towardYaw), cz = Math.cos(b.towardYaw);
-            const toPlayer = new THREE.Vector3(cam.x - bpos.x, 0, cam.z - bpos.z).normalize();
-            const inCone = new THREE.Vector3(cx, 0, cz).dot(toPlayer) > 0.3;
-            if (facing > 0.2 && inCone && !this.losBlocked(cam, bpos)) {
-              this.hud.blind(Math.round(800 * (1 - dist / 10) * facing));
-            }
+          const look = new THREE.Vector3();
+          this.renderer.camera.getWorldDirection(look);
+          const toFlash = bpos.clone().sub(cam).normalize();
+          const facing = look.dot(toFlash);
+          // The cone fans out FROM the decoy TOWARD the shooter, so test the
+          // player's position relative to the burst — not their look vector
+          // (which points back at the decoy and would always fail the cone).
+          const cx = Math.sin(b.towardYaw), cz = Math.cos(b.towardYaw);
+          const toPlayer = new THREE.Vector3(cam.x - bpos.x, 0, cam.z - bpos.z).normalize();
+          const inCone = new THREE.Vector3(cx, 0, cz).dot(toPlayer) > DECOY.coneDot;
+          if (facing > 0.2 && inCone && !this.losBlocked(cam, bpos)) {
+            const ms = Math.round(DECOY.flashBlindMs * (0.7 + 0.3 * facing));
+            this.hud.blind(ms);
+            this.sfx.tinnitus(ms);
           }
         }
-        this.renderer.scene.remove(b.group);
-        b.group.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (o.material as THREE.Material).dispose(); } });
+        this.renderer.scene.remove(b.avatar.group);
+        b.avatar.dispose();
         this.decoyBursting.delete(id);
       }
     }
@@ -1522,7 +1501,9 @@ export class Game {
       this.hud.setTimer(remainingMs);
     }
 
-    this.renderer.render();
+    // The Locker is a full-screen overlay with its own (now lightweight) 3D
+    // previews — don't also render the fully-occluded game scene underneath it.
+    if (!this.locker.isOpen()) this.renderer.render();
     requestAnimationFrame(() => this.loop());
   }
 }

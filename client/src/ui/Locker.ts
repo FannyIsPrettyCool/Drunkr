@@ -104,6 +104,11 @@ export class Locker {
     this.onClose?.();
   }
 
+  /** True while the Locker overlay is on screen (its previews are rendering). */
+  isOpen(): boolean {
+    return !this.root.classList.contains("hidden");
+  }
+
   private build() {
     this.built = true;
     const weaponTabs = SKINNABLE_WEAPONS
@@ -154,7 +159,9 @@ export class Locker {
     const wCanvas = this.root.querySelector("#lk-wpreview") as HTMLCanvasElement;
     this.wRenderer = new THREE.WebGLRenderer({ canvas: wCanvas, antialias: true, alpha: true });
     this.wRenderer.setSize(wCanvas.width, wCanvas.height, false);
-    this.wRenderer.setPixelRatio(devicePixelRatio);
+    // Pixel ratio 1 (not devicePixelRatio): these previews are tiny, and at 2×
+    // with MSAA they cost ~10× the whole low-res game and tank FPS while open.
+    this.wRenderer.setPixelRatio(1);
     this.wScene.add(new THREE.HemisphereLight(0x88aaff, 0x101018, 1.3));
     const wd = new THREE.DirectionalLight(0xffffff, 1.0); wd.position.set(6, 12, 8); this.wScene.add(wd);
     this.wScene.add(this.wGroup);
@@ -163,7 +170,7 @@ export class Locker {
     const cCanvas = this.root.querySelector("#lk-cpreview") as HTMLCanvasElement;
     this.cRenderer = new THREE.WebGLRenderer({ canvas: cCanvas, antialias: true, alpha: true });
     this.cRenderer.setSize(cCanvas.width, cCanvas.height, false);
-    this.cRenderer.setPixelRatio(devicePixelRatio);
+    this.cRenderer.setPixelRatio(1); // see weapon preview note above
     this.cScene.add(new THREE.HemisphereLight(0x88aaff, 0x101018, 1.3));
     const cd = new THREE.DirectionalLight(0xffffff, 1.0); cd.position.set(4, 10, 8); this.cScene.add(cd);
     this.cScene.add(this.cGroup);

@@ -220,7 +220,19 @@ export const REFLECT = { durationMs: 1200 };
 /** Bulwark Repulse: launch nearby enemies away from you. */
 export const REPULSE = { radius: 10, strength: 22, up: 7 };
 /** Mirage Decoy: a holographic clone that sprints forward to draw fire. */
-export const DECOY = { speed: 10, durationMs: 3500 };
+export const DECOY = {
+  speed: 10,
+  durationMs: 5000,
+  /** Falls under gravity (re-uses the player capsule's dims for collision). */
+  gravity: 26,
+  radius: 0.4,
+  /** When destroyed it fires a flash cone back at whoever shot it. The cone has
+   * (near-)unlimited range and widens with distance — an angular test — so
+   * anyone caught looking along it is blinded; only walls (LOS) stop it. */
+  flashBlindMs: 1800,
+  /** cos of the cone half-angle: how wide the blind fans toward the shooter. */
+  coneDot: 0.25,
+};
 export const GRENADE = {
   fuseMs: 1400,
   speed: 24,

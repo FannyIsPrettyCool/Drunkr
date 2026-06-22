@@ -918,11 +918,16 @@ function updateDecoys(room: Room, now: number, dt: number) {
   for (let i = room.decoys.length - 1; i >= 0; i--) {
     const d = room.decoys[i];
     if (now >= d.expireAt) { room.decoys.splice(i, 1); continue; }
-    const nx = d.pos.x + d.vel.x * dt, nz = d.pos.z + d.vel.z * dt;
-    // Stop sprinting forward if it would run into a wall.
-    if (!insideSolid(room, { x: nx, y: d.pos.y + 0.6, z: nz })) {
-      d.pos.x = nx; d.pos.z = nz;
-    } else { d.vel.x = 0; d.vel.z = 0; }
+    // Move it like a real player capsule: gravity pulls it down and the collision
+    // world resolves it against geometry, so it walks the floor, falls off ledges,
+    // and stops sprinting when it bonks a wall (move() zeroes the blocked axes).
+    d.vel.y -= DECOY.gravity * dt;
+    room.world.move(d.pos, d.vel, DECOY.radius, MOVE.height, dt);
+    const rg = room.world.rampGround(d.pos);
+    if (rg !== null && d.vel.y <= 1 && d.pos.y >= rg - 0.7 && d.pos.y <= rg + 0.5) {
+      d.pos.y = rg;
+      if (d.vel.y < 0) d.vel.y = 0;
+    }
     const hspd = Math.hypot(d.vel.x, d.vel.z);
     if (hspd > 0.1) d.yaw = Math.atan2(d.vel.x, d.vel.z);
   }
