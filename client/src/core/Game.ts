@@ -74,6 +74,11 @@ export class Game {
   private pmTitle = document.getElementById("pm-title")!;
   private pmName = document.getElementById("pm-name") as HTMLInputElement;
   private pmResumeBtn = document.getElementById("pm-resume") as HTMLButtonElement;
+  // After an intentional Esc-close we re-lock the pointer, but that races with
+  // the browser's own Esc-to-unlock gesture (the lock can engage then tear down
+  // immediately). Ignore unlock events until this time so the menu doesn't pop
+  // back up; a normal unlock (alt-tab, etc.) after the window still shows it.
+  private suppressPauseUntil = 0;
   private settingsPanel!: SettingsPanel;
   private locker = new Locker();
 
@@ -218,6 +223,7 @@ export class Game {
         this.sfx.startAmbience();
         this.hidePauseMenu();
       } else if (!this.local.dead && !this.adminPanel.open && !this.chatOpen) {
+        if (performance.now() < this.suppressPauseUntil) return;
         this.showPauseMenu(false);
       }
     };
@@ -245,7 +251,8 @@ export class Game {
         if (!this.pauseMenu.classList.contains("hidden") && !this.local.dead) {
           e.preventDefault();
           this.hidePauseMenu();
-          this.renderer.renderer.domElement.requestPointerLock?.();
+          this.suppressPauseUntil = performance.now() + 600;
+          this.input.requestLock();
           return;
         }
       }
