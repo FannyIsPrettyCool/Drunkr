@@ -202,18 +202,19 @@ interface Actor {
 /** Set the broadcast palette for the actor's currently-held weapon (from the Locker). */
 function applyWepPalette(actor: Actor) {
   const p = actor.lockerSkins?.[actor.state.weapon];
-  actor.state.wepPalette = Array.isArray(p) && p.length >= 6 ? p.slice(0, 6) : undefined;
+  actor.state.wepPalette = Array.isArray(p) && p.length >= 1 ? p.slice(0, 8) : undefined;
 }
 
-/** Validate client-supplied Locker palettes (a few guns × 6 colour ints). */
+/** Validate client-supplied Locker palettes (per-gun part arrays — each entry
+ * packs an RGB colour plus a finish index in its top byte). */
 function sanitizeLockerSkins(raw: unknown): Record<string, number[]> | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const out: Record<string, number[]> = {};
   let count = 0;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (count++ > 8 || typeof k !== "string" || k.length > 16 || !Array.isArray(v)) continue;
-    const arr = v.slice(0, 6).map((n) => (isFiniteNum(n) ? Math.max(0, Math.min(0xffffff, Math.floor(n))) : 0));
-    if (arr.length === 6) out[k] = arr;
+    const arr = v.slice(0, 8).map((n) => (isFiniteNum(n) ? Math.max(0, Math.min(0x3fffffff, Math.floor(n))) : 0));
+    if (arr.length >= 1) out[k] = arr;
   }
   return Object.keys(out).length ? out : undefined;
 }

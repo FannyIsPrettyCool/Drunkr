@@ -2,11 +2,11 @@ import * as THREE from "three";
 import { MOVE, ABILITY_LIST, ABILITIES, sanitizeAbilities } from "@drunkr/shared";
 import {
   loadLocker, saveLocker, type LockerData,
-  WEAPON_SKINS, WEAPON_SKIN_LIST, SKIN_PARTS, SKINNABLE_WEAPONS, SKIN_HUES,
-  skinToArr, arrToSkin, ACCESSORIES, ACCESSORY_LIST,
-  type WeaponSkin,
+  SKINNABLE_WEAPONS, SKIN_HUES, ACCESSORIES, ACCESSORY_LIST,
+  FINISHES, SKIN_PRESETS, presetParts, weaponParts, decodeWeaponParts, packPart,
+  type ResolvedPart,
 } from "../render/cosmetics.js";
-import { buildWeaponMesh } from "../render/weaponMesh.js";
+import { buildViewModel } from "../render/viewModelMesh.js";
 
 const hex = (n: number) => "#" + (n & 0xffffff).toString(16).padStart(6, "0");
 const parseHex = (s: string) => parseInt(s.replace("#", ""), 16) || 0;
@@ -113,11 +113,8 @@ export class Locker {
     this.built = true;
     const weaponTabs = SKINNABLE_WEAPONS
       .map((w) => `<button class="lk-wtab" data-w="${w.id}">${w.label}</button>`).join("");
-    const presets = WEAPON_SKIN_LIST
+    const presets = SKIN_PRESETS
       .map((p) => `<button class="lk-preset" data-p="${p.id}">${p.label}</button>`).join("");
-    const pickers = SKIN_PARTS
-      .map((p, i) => `<label class="lk-picker"><span>${p.label}</span>` +
-        `<input type="color" data-i="${i}" /></label>`).join("");
     const accessories = ACCESSORY_LIST
       .map((a) => `<button class="lk-acc" data-a="${a.id}">${a.label}</button>`).join("");
     const abilities2 = ABILITY_LIST
@@ -134,7 +131,7 @@ export class Locker {
             <div class="lk-label">PRESETS</div>
             <div class="lk-presets">${presets}</div>
             <div class="lk-label">MATERIALS</div>
-            <div class="lk-pickers">${pickers}</div>
+            <div id="lk-pickers" class="lk-pickers"></div>
             <button id="lk-reset" class="lk-reset">RESET THIS GUN</button>
           </div>
           <div class="lk-col">
@@ -191,20 +188,16 @@ export class Locker {
     }
     for (const btn of this.root.querySelectorAll<HTMLElement>(".lk-preset")) {
       btn.addEventListener("click", () => {
-        this.data.skins[this.weaponId] = skinToArr(WEAPON_SKINS[btn.dataset.p!] ?? WEAPON_SKINS.default);
+        const preset = SKIN_PRESETS.find((p) => p.id === btn.dataset.p);
+        if (preset) this.data.skins[this.weaponId] = presetParts(this.weaponId, preset);
+        this.renderParts();
         this.commit();
       });
     }
-    for (const inp of this.root.querySelectorAll<HTMLInputElement>('.lk-picker input[type="color"]')) {
-      inp.addEventListener("input", () => {
-        const arr = this.currentPalette();
-        arr[Number(inp.dataset.i)] = parseHex(inp.value);
-        this.data.skins[this.weaponId] = arr;
-        this.commit();
-      });
-    }
+    // Per-part colour + finish controls are (re)built per weapon in renderParts().
     this.root.querySelector("#lk-reset")!.addEventListener("click", () => {
       delete this.data.skins[this.weaponId];
+      this.renderParts();
       this.commit();
     });
     for (const btn of this.root.querySelectorAll<HTMLElement>(".lk-acc")) {
@@ -260,33 +253,60 @@ export class Locker {
     }
   }
 
-  /** Current edited weapon's palette as a mutable 6-array (default if unset). */
-  private currentPalette(): number[] {
-    return (this.data.skins[this.weaponId] ?? skinToArr(WEAPON_SKINS.default)).slice();
+  /** Current edited weapon's parts (colour + finish), default if unset. */
+  private currentParts(): ResolvedPart[] {
+    return decodeWeaponParts(this.weaponId, this.data.skins[this.weaponId]);
   }
 
-  private currentSkin(): WeaponSkin {
-    return arrToSkin(this.data.skins[this.weaponId]) ?? WEAPON_SKINS.default;
+  /** Build the per-part rows (label + finish dropdown + colour) for the selected
+   * weapon. Rebuilt on weapon switch / preset / reset — NOT on every colour drag
+   * (which would destroy the input mid-interaction). */
+  private renderParts() {
+    const pickersEl = this.root.querySelector("#lk-pickers");
+    if (!pickersEl) return;
+    const defs = weaponParts(this.weaponId);
+    const cur = this.currentParts();
+    const finishOpts = FINISHES.map((f, fi) => `<option value="${fi}">${f.label}</option>`).join("");
+    pickersEl.innerHTML = defs.map((d, i) =>
+      `<label class="lk-picker"><span>${d.label}</span>` +
+      `<span class="lk-mat">` +
+      `<select class="lk-finish" data-i="${i}">${finishOpts}</select>` +
+      `<input type="color" class="lk-color" data-i="${i}" /></span></label>`,
+    ).join("");
+    for (const sel of pickersEl.querySelectorAll<HTMLSelectElement>(".lk-finish")) {
+      const i = Number(sel.dataset.i);
+      sel.value = String(cur[i].finish);
+      sel.addEventListener("change", () => this.editPart(i, undefined, Number(sel.value)));
+    }
+    for (const inp of pickersEl.querySelectorAll<HTMLInputElement>(".lk-color")) {
+      const i = Number(inp.dataset.i);
+      inp.value = hex(cur[i].color);
+      inp.addEventListener("input", () => this.editPart(i, parseHex(inp.value), undefined));
+    }
   }
 
-  /** Persist + refresh previews and any live viewmodel after an edit. */
+  /** Apply a colour and/or finish change to one part, then persist + preview. */
+  private editPart(i: number, color?: number, finish?: number) {
+    const parts = this.currentParts();
+    if (color != null) parts[i].color = color;
+    if (finish != null) parts[i].finish = finish;
+    this.data.skins[this.weaponId] = parts.map((p) => packPart(p.color, p.finish));
+    this.commit();
+  }
+
+  /** Persist + refresh the preview and any live viewmodel after an edit. */
   private commit() {
     saveLocker(this.data);
-    this.syncControls();
     this.rebuildWeaponPreview();
     this.onChange?.();
   }
 
-  /** Reflect the current selection into the controls (tabs, pickers, accessory). */
+  /** Reflect the current selection into the controls (tabs, parts, accessory). */
   private syncControls() {
     for (const tab of this.root.querySelectorAll<HTMLElement>(".lk-wtab")) {
       tab.classList.toggle("active", tab.dataset.w === this.weaponId);
     }
-    const sk = this.currentSkin();
-    const arr = skinToArr(sk);
-    for (const inp of this.root.querySelectorAll<HTMLInputElement>('.lk-picker input[type="color"]')) {
-      inp.value = hex(arr[Number(inp.dataset.i)]);
-    }
+    this.renderParts();
     this.markActiveAccessory();
     this.markActiveSkin();
     this.syncAbilities();
@@ -315,7 +335,7 @@ export class Locker {
 
   private rebuildWeaponPreview() {
     this.clearGroup(this.wGroup);
-    const { group } = buildWeaponMesh(this.weaponId, this.currentSkin());
+    const { group } = buildViewModel(this.weaponId, this.currentParts());
     const box = new THREE.Box3().setFromObject(group);
     const c = box.getCenter(new THREE.Vector3());
     group.position.sub(c);
