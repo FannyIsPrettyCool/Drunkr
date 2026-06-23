@@ -93,6 +93,8 @@ export class CollisionWorld {
   private hazards: { aabb: AABB; dps: number }[];
   /** Match-clock time (ms) used to position moving platforms. */
   private time = 0;
+  /** Previous match-clock time, for computing a platform's per-frame motion. */
+  private prevTime = 0;
 
   constructor(map: GameMap) {
     this.boxes = [];
@@ -154,7 +156,37 @@ export class CollisionWorld {
   }
 
   /** Set the synced match-clock time (ms) used to position moving platforms. */
-  setTime(ms: number) { this.time = ms; }
+  setTime(ms: number) { this.prevTime = this.time; this.time = ms; }
+
+  /**
+   * If the capsule is resting on top of a moving platform, translate it by the
+   * platform's per-frame motion so the rider moves with it (horizontally and
+   * vertically). Detection uses the platform's *previous* position (where the
+   * rider is standing); moving them to its *current* position also stops a
+   * rising platform from shoving the rider out the side. Call once per move().
+   */
+  private carryRiders(pos: Vec3, vel: Vec3, radius: number) {
+    if (!this.platforms.length) return;
+    const dtMs = this.time - this.prevTime;
+    if (dtMs <= 0 || dtMs > 200) return; // first frame / big time jump: don't teleport
+    for (const p of this.platforms) {
+      const prev = platformPosAt(p, this.prevTime);
+      const cur = platformPosAt(p, this.time);
+      const dx = cur.x - prev.x, dy = cur.y - prev.y, dz = cur.z - prev.z;
+      if (dx === 0 && dy === 0 && dz === 0) continue;
+      const hx = p.size.x / 2, hz = p.size.z / 2;
+      const top = prev.y + p.size.y / 2;
+      if (
+        pos.y <= top + 0.12 && pos.y >= top - 0.3 &&
+        pos.x >= prev.x - hx - radius && pos.x <= prev.x + hx + radius &&
+        pos.z >= prev.z - hz - radius && pos.z <= prev.z + hz + radius
+      ) {
+        pos.x += dx; pos.y += dy; pos.z += dz;
+        if (dy > 0 && vel.y < 0) vel.y = 0; // don't let leftover gravity fight the lift
+        return; // ride one platform at a time
+      }
+    }
+  }
 
   /** Recompute the current-frame AABB for each moving platform. */
   private updateDynBoxes() {
@@ -222,6 +254,8 @@ export class CollisionWorld {
   ): { grounded: boolean; hitWall: boolean } {
     // Position moving platforms for this frame, then collide against them too.
     this.updateDynBoxes();
+    // Carry anyone riding a platform along with it (before resolving their own move).
+    this.carryRiders(pos, vel, radius);
     // Sub-step so high speed (bhop, dash, jump pads, blink) can't tunnel
     // through walls or the floor in a single frame.
     const maxDisp = Math.max(Math.abs(vel.x), Math.abs(vel.y), Math.abs(vel.z)) * dt;
