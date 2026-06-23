@@ -24,6 +24,8 @@ const NB = [1, 0, -1, 0, 0, 1, 0, -1, 1, 1, 1, -1, -1, 1, -1, -1];
  * geometry (bridges, high platforms) is ignored. Fine collision is still
  * handled by `stepMovement`, so the path only needs to be roughly correct.
  */
+interface HazBox { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number; }
+
 export class NavGrid {
   readonly cell: number;
   readonly cols: number;
@@ -32,10 +34,21 @@ export class NavGrid {
   private originZ: number;
   private walk: Uint8Array;
   private world: CollisionWorld;
+  private haz: HazBox[];
 
-  constructor(world: CollisionWorld, bounds: number, cell = 1.5) {
+  constructor(
+    world: CollisionWorld,
+    bounds: number,
+    hazards: { pos: Vec3; size: Vec3 }[] = [],
+    cell = 1.5,
+  ) {
     this.world = world;
     this.cell = cell;
+    this.haz = hazards.map((h) => ({
+      minX: h.pos.x - h.size.x / 2, maxX: h.pos.x + h.size.x / 2,
+      minY: h.pos.y - h.size.y / 2, maxY: h.pos.y + h.size.y / 2,
+      minZ: h.pos.z - h.size.z / 2, maxZ: h.pos.z + h.size.z / 2,
+    }));
     this.originX = -bounds;
     this.originZ = -bounds;
     this.cols = Math.ceil((bounds * 2) / cell) + 1;
@@ -50,7 +63,9 @@ export class NavGrid {
     }
   }
 
-  /** Is a standing capsule at this world (x,z) clear of solid geometry? */
+  /** Is a standing capsule at this world (x,z) clear of solid geometry and not in
+   *  a hazard zone? Bots treat damage zones as unwalkable so A* routes around
+   *  them and idle wander never picks a spot inside one. */
   clearAt(x: number, z: number): boolean {
     for (const b of this.world.boxes) {
       if (b.maxY <= BODY_LO || b.minY >= BODY_HI) continue; // floor / overhead
@@ -58,6 +73,25 @@ export class NavGrid {
         x - CLEARANCE < b.maxX && x + CLEARANCE > b.minX &&
         z - CLEARANCE < b.maxZ && z + CLEARANCE > b.minZ
       ) return false;
+    }
+    if (this.haz.length && !this.hazardSafe(x, z)) return false;
+    return true;
+  }
+
+  /** False if a bot standing at (x,z) would be inside a hazard. Floor-aware: a
+   *  solid surface above a hazard (a bridge over acid) stays safe, while a hazard
+   *  at the standing surface — or a floorless pit you'd fall into — does not. */
+  private hazardSafe(x: number, z: number): boolean {
+    let floorTop = -Infinity;
+    for (const b of this.world.boxes) {
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
+      if (b.maxY > floorTop) floorTop = b.maxY;
+    }
+    if (floorTop === -Infinity) floorTop = 0;
+    const bandLo = floorTop, bandHi = floorTop + 1.8;
+    for (const h of this.haz) {
+      if (x < h.minX || x > h.maxX || z < h.minZ || z > h.maxZ) continue;
+      if (h.maxY > bandLo && h.minY < bandHi) return false;
     }
     return true;
   }

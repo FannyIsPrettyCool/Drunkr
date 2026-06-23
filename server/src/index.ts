@@ -394,7 +394,7 @@ function createRoom(config: RoomConfig, persistent = false): Room {
     map,
     customMap: custom ?? undefined,
     world,
-    nav: new NavGrid(world, map.bounds),
+    nav: new NavGrid(world, map.bounds, map.hazards ?? []),
     difficulty: config.difficulty && config.difficulty in BOT_DIFF ? config.difficulty : "normal",
     botsEnabled: config.bots,
     botCount: config.bots ? clamp(Math.round(config.botCount), 0, 10) : 0,
@@ -1308,7 +1308,7 @@ function startNextMatch(room: Room) {
     room.map = MAPS[nextMapId];
     room.customMap = undefined;
     room.world = new CollisionWorld(room.map);
-    room.nav = new NavGrid(room.world, room.map.bounds);
+    room.nav = new NavGrid(room.world, room.map.bounds, room.map.hazards ?? []);
   }
 
   room.intermission = false;
@@ -1604,6 +1604,37 @@ function updateBot(room: Room, bot: Actor, now: number, dt: number) {
     const dx = node.x - me.pos.x, dz = node.z - me.pos.z;
     const dl = Math.hypot(dx, dz);
     if (dl > 0.001) { wishX = dx / dl; wishZ = dz / dl; }
+  }
+
+  // === HAZARD AVOIDANCE ===
+  // A* already routes around damage zones, but combat steering (strafing toward a
+  // target) ignores the path — so repel the wish vector from any nearby hazard,
+  // and scramble straight out if we've ended up inside one.
+  if (!frozen && room.map.hazards?.length) {
+    const feet = me.pos.y, head = me.pos.y + MOVE.height;
+    for (const h of room.map.hazards) {
+      const hx = h.size.x / 2, hy = h.size.y / 2, hz = h.size.z / 2;
+      if (h.pos.y - hy > head || h.pos.y + hy < feet - 2.5) continue; // not near our level
+      const nx = Math.max(h.pos.x - hx, Math.min(h.pos.x + hx, me.pos.x));
+      const nz = Math.max(h.pos.z - hz, Math.min(h.pos.z + hz, me.pos.z));
+      const ddx = me.pos.x - nx, ddz = me.pos.z - nz;
+      const dist = Math.hypot(ddx, ddz);
+      const MARGIN = 3.5;
+      if (dist > MARGIN) continue;
+      let rx: number, rz: number;
+      if (dist < 1e-3) { // inside the hazard: head for the nearest edge
+        const dxn = me.pos.x - (h.pos.x - hx), dxp = (h.pos.x + hx) - me.pos.x;
+        const dzn = me.pos.z - (h.pos.z - hz), dzp = (h.pos.z + hz) - me.pos.z;
+        const m = Math.min(dxn, dxp, dzn, dzp);
+        if (m === dxn) { rx = -1; rz = 0; } else if (m === dxp) { rx = 1; rz = 0; }
+        else if (m === dzn) { rx = 0; rz = -1; } else { rx = 0; rz = 1; }
+      } else { rx = ddx / dist; rz = ddz / dist; }
+      const strength = (MARGIN - dist) / MARGIN; // 0 at the margin, 1 at/inside the edge
+      wishX += rx * strength * 3;
+      wishZ += rz * strength * 3;
+    }
+    const wl = Math.hypot(wishX, wishZ);
+    if (wl > 1) { wishX /= wl; wishZ /= wl; }
   }
 
   const moving = wishX !== 0 || wishZ !== 0;

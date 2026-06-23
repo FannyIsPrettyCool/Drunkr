@@ -165,25 +165,34 @@ export class CollisionWorld {
    * rider is standing); moving them to its *current* position also stops a
    * rising platform from shoving the rider out the side. Call once per move().
    */
-  private carryRiders(pos: Vec3, vel: Vec3, radius: number) {
+  private carryRiders(pos: Vec3, vel: Vec3, radius: number, height: number) {
     if (!this.platforms.length) return;
     const dtMs = this.time - this.prevTime;
     if (dtMs <= 0 || dtMs > 200) return; // first frame / big time jump: don't teleport
+    const feet = pos.y, head = pos.y + height;
     for (const p of this.platforms) {
       const prev = platformPosAt(p, this.prevTime);
       const cur = platformPosAt(p, this.time);
       const dx = cur.x - prev.x, dy = cur.y - prev.y, dz = cur.z - prev.z;
       if (dx === 0 && dy === 0 && dz === 0) continue;
-      const hx = p.size.x / 2, hz = p.size.z / 2;
-      const top = prev.y + p.size.y / 2;
-      if (
+      const hx = p.size.x / 2, hy = p.size.y / 2, hz = p.size.z / 2;
+      const top = prev.y + hy;
+      // Resting on top (using its previous position, where the rider is standing): ride it.
+      const onTop =
         pos.y <= top + 0.12 && pos.y >= top - 0.3 &&
         pos.x >= prev.x - hx - radius && pos.x <= prev.x + hx + radius &&
-        pos.z >= prev.z - hz - radius && pos.z <= prev.z + hz + radius
-      ) {
+        pos.z >= prev.z - hz - radius && pos.z <= prev.z + hz + radius;
+      // Body overlapping the platform's *current* box: it swept into us. Shove the
+      // player along with it instead of letting the generic AABB resolver eject a
+      // centred body to a far face (a sideways "launch") or punch it through the floor.
+      const bodyHit =
+        pos.x - radius < cur.x + hx && pos.x + radius > cur.x - hx &&
+        pos.z - radius < cur.z + hz && pos.z + radius > cur.z - hz &&
+        feet < cur.y + hy && head > cur.y - hy;
+      if (onTop || bodyHit) {
         pos.x += dx; pos.y += dy; pos.z += dz;
         if (dy > 0 && vel.y < 0) vel.y = 0; // don't let leftover gravity fight the lift
-        return; // ride one platform at a time
+        return; // ride / get shoved by one platform at a time
       }
     }
   }
@@ -255,7 +264,7 @@ export class CollisionWorld {
     // Position moving platforms for this frame, then collide against them too.
     this.updateDynBoxes();
     // Carry anyone riding a platform along with it (before resolving their own move).
-    this.carryRiders(pos, vel, radius);
+    this.carryRiders(pos, vel, radius, height);
     // Sub-step so high speed (bhop, dash, jump pads, blink) can't tunnel
     // through walls or the floor in a single frame.
     const maxDisp = Math.max(Math.abs(vel.x), Math.abs(vel.y), Math.abs(vel.z)) * dt;
@@ -287,38 +296,22 @@ export class CollisionWorld {
     hitWall = this.moveAxisZ(pos, vel, radius, height, dt) || hitWall;
 
     // --- Step-up ---
-    // If a wall stopped us while we were walking (not jumping up), retry the
-    // same horizontal move lifted by one step height. If that clears the
-    // obstacle, settle onto the step's top surface. This removes the "invisible
-    // wall" at the top of ramps / platform seams and lets you walk up low
-    // ledges smoothly instead of being stopped dead or snapped on top.
+    // If a wall stopped us while walking (not jumping), and the thing we hit is a
+    // low ledge within step height with clear headroom above, mount it: place the
+    // feet on the ledge top at the position we were trying to reach. `topUnder`
+    // sees every collider kind (boxes, moving platforms, cylinders/wedges/spheres,
+    // Y-boxes, ramps), so this reliably climbs staircases and steps onto low props
+    // instead of stalling at their base.
     if (hitWall && movedHoriz && vel.y <= 0.1) {
-      const fx = pos.x, fz = pos.z, fvx = vel.x, fvz = vel.z;
-      const flatProgress = (fx - sx) * (fx - sx) + (fz - sz) * (fz - sz);
-
-      pos.x = sx; pos.y = sy + stepHeight; pos.z = sz;
-      vel.x = ovx; vel.z = ovz;
-      this.moveAxisX(pos, vel, radius, height, dt);
-      this.moveAxisZ(pos, vel, radius, height, dt);
-      const stepProgress = (pos.x - sx) * (pos.x - sx) + (pos.z - sz) * (pos.z - sz);
-
-      if (stepProgress > flatProgress + 1e-4 && !this.overlapsAny(pos, radius, height)) {
-        // We cleared the obstacle up high — drop onto the step's top surface.
-        let groundY = sy, found = false;
-        for (const b of this.collBoxes) {
-          if (
-            pos.x - radius < b.maxX && pos.x + radius > b.minX &&
-            pos.z - radius < b.maxZ && pos.z + radius > b.minZ &&
-            b.maxY <= sy + stepHeight + 1e-3 && b.maxY >= sy - 1e-3 &&
-            (!found || b.maxY > groundY)
-          ) { groundY = b.maxY; found = true; }
-        }
-        if (found) { pos.y = groundY; grounded = true; } else pos.y = sy;
-        hitWall = false; // we climbed it rather than bonking into it
-      } else {
-        // The lift didn't help (a real wall) — keep the blocked result.
-        pos.x = fx; pos.y = sy; pos.z = fz; vel.x = fvx; vel.z = fvz;
+      const ix = sx + ovx * dt, iz = sz + ovz * dt; // where we wanted to walk
+      const surf = this.topUnder(ix, iz, radius, sy + 0.04, sy + stepHeight + 0.05);
+      if (surf !== null && this.capsuleFits({ x: ix, y: surf + 0.02, z: iz }, radius, height)) {
+        pos.x = ix; pos.z = iz; pos.y = surf;
+        vel.x = ovx; vel.z = ovz;
+        grounded = true;
+        hitWall = false;
       }
+      // Otherwise it's a real wall (or no clear footing): keep the slid result.
     }
 
     // --- Y axis ---
@@ -326,12 +319,14 @@ export class CollisionWorld {
     for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
       if (vel.y <= 0) {
-        pos.y = b.maxY;
-        grounded = true;
+        // Land only on a surface at/below the feet (a floor). A box whose top is
+        // well above the feet is a ceiling we grazed while descending — don't snap
+        // onto its roof (that's how spawns under an overhang got launched upward).
+        if (b.maxY <= pos.y + 0.5) { pos.y = b.maxY; grounded = true; vel.y = 0; }
       } else {
         pos.y = b.minY - height;
+        vel.y = 0;
       }
-      vel.y = 0;
     }
 
     // --- Oriented (Y-rotated) boxes ---
@@ -344,11 +339,14 @@ export class CollisionWorld {
     // --- Shape primitives (cylinder / sphere / wedge) ---
     for (const sc of this.shapes) {
       const r = sc.kind === "cylinder" ? this.resolveCylinder(pos, vel, radius, height, sc, stepHeight)
-        : sc.kind === "sphere" ? this.resolveSphere(pos, vel, radius, height, sc)
+        : sc.kind === "sphere" ? this.resolveSphere(pos, vel, radius, height, sc, stepHeight)
           : this.resolveWedge(pos, vel, radius, height, sc, stepHeight);
       grounded = grounded || r.grounded;
       hitWall = hitWall || r.hitWall;
     }
+    // Ramps are walkable surfaces only (the slope is followed by rampGround after
+    // the move) — their underside is intentionally open so you can walk beneath a
+    // raised ramp / slope.
 
     return { grounded, hitWall };
   }
@@ -367,8 +365,11 @@ export class CollisionWorld {
 
     const penUp = sc.cy + sc.hy - feet;
     const penDown = head - (sc.cy - sc.hy);
-    const canStep = penUp <= step && vel.y <= 0.5;
-    if (canStep && penUp <= horizPen && penUp <= penDown) {
+    // Step onto a low cylinder top whenever its top is within step height and
+    // there's more room up than down — don't require penUp<=horizPen, which never
+    // holds at first contact and would block you at the base instead of mounting.
+    const canStep = penUp <= step && penUp >= -0.06 && vel.y <= 0.5;
+    if (canStep && penUp <= penDown) {
       pos.y = sc.cy + sc.hy;
       if (vel.y < 0) vel.y = 0;
       return { grounded: true, hitWall: false };
@@ -386,30 +387,46 @@ export class CollisionWorld {
     return { grounded: false, hitWall: true };
   }
 
-  /** Player capsule vs a sphere (ellipsoid approximated by its mean radius):
-   *  push out along the line from the sphere centre to the nearest point on the
-   *  player's vertical axis, so you can round it off and stand on its top. */
+  /** Player capsule vs a sphere. Horizontal blocking uses the sphere's circular
+   *  cross-section at the player's own height (so it never degenerates into a
+   *  giant push when the body sits below the centre — the old "launch" bug); the
+   *  upper cap is a roundable dome you can step onto and stand on. */
   private resolveSphere(
-    pos: Vec3, vel: Vec3, radius: number, height: number, sc: ShapeCollider,
+    pos: Vec3, vel: Vec3, radius: number, height: number, sc: ShapeCollider, step: number,
   ): { grounded: boolean; hitWall: boolean } {
     const R = (sc.hx + sc.hy + sc.hz) / 3;
     const feet = pos.y, head = pos.y + height;
-    const qy = Math.max(feet, Math.min(head, sc.cy)); // closest axis point in Y
-    const dx = pos.x - sc.cx, dy = qy - sc.cy, dz = pos.z - sc.cz;
-    const d = Math.hypot(dx, dy, dz);
-    const pen = R + radius - d;
-    if (pen <= 0) return { grounded: false, hitWall: false };
-    const nx = d < 1e-6 ? 0 : dx / d;
-    const ny = d < 1e-6 ? 1 : dy / d;
-    const nz = d < 1e-6 ? 0 : dz / d;
-    pos.x += nx * pen;
-    pos.y += ny * pen;
-    pos.z += nz * pen;
-    const vn = vel.x * nx + vel.y * ny + vel.z * nz;
-    if (vn < 0) { vel.x -= vn * nx; vel.y -= vn * ny; vel.z -= vn * nz; }
-    const grounded = ny > 0.5;
-    if (grounded && vel.y < 0) vel.y = 0;
-    return { grounded, hitWall: Math.abs(ny) < 0.5 };
+    if (head <= sc.cy - R || feet >= sc.cy + R) return { grounded: false, hitWall: false };
+    const dx = pos.x - sc.cx, dz = pos.z - sc.cz;
+    const dh = Math.hypot(dx, dz);
+    if (dh >= R + radius) return { grounded: false, hitWall: false };
+
+    // Stand on / step onto the dome when its surface here is within reach.
+    const inside = Math.min(dh, R);
+    const domeY = sc.cy + Math.sqrt(Math.max(0, R * R - inside * inside));
+    const penUp = domeY - feet;
+    if (dh < R && vel.y <= 0.5 && penUp <= step + 0.05 && penUp > -0.6) {
+      pos.y = domeY;
+      if (vel.y < 0) vel.y = 0;
+      return { grounded: true, hitWall: false };
+    }
+    // Rising into the underside → bonk head and fall.
+    if (vel.y > 0 && dh < R && feet < sc.cy) {
+      const baseY = sc.cy - Math.sqrt(Math.max(0, R * R - inside * inside));
+      if (head > baseY) { pos.y = baseY - height; vel.y = 0; return { grounded: false, hitWall: false }; }
+    }
+    // Otherwise push out horizontally using the cross-section radius at the
+    // player's nearest vertical level (bounded by R+radius, so never a launch).
+    const yc = Math.max(feet, Math.min(head, sc.cy));
+    const rc = Math.sqrt(Math.max(0, R * R - (yc - sc.cy) * (yc - sc.cy)));
+    const horizPen = rc + radius - dh;
+    if (horizPen <= 0) return { grounded: false, hitWall: false };
+    const nx = dh < 1e-6 ? 1 : dx / dh, nz = dh < 1e-6 ? 0 : dz / dh;
+    pos.x += nx * horizPen;
+    pos.z += nz * horizPen;
+    const vn = vel.x * nx + vel.z * nz;
+    if (vn < 0) { vel.x -= vn * nx; vel.z -= vn * nz; }
+    return { grounded: false, hitWall: true };
   }
 
   /** Player capsule vs a wedge (right-triangular prism). The hypotenuse is a
@@ -454,7 +471,7 @@ export class CollisionWorld {
     }
 
     const canStep = penUp <= step && penUp >= -0.06 && vel.y <= 0.5;
-    if (canStep && penUp <= horizPen && penUp <= penDown) {
+    if (canStep && penUp <= penDown) {
       pos.y = surfY;
       if (vel.y < 0) vel.y = 0;
       return { grounded: true, hitWall: false };
@@ -482,11 +499,16 @@ export class CollisionWorld {
     let hit = false;
     for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
-      if (vel.x > 0) pos.x = b.minX - radius;
-      else if (vel.x < 0) pos.x = b.maxX + radius;
-      else pos.x = (pos.x - b.minX < b.maxX - pos.x) ? b.minX - radius : b.maxX + radius;
-      vel.x = 0;
-      hit = true;
+      if (vel.x > 0) { pos.x = b.minX - radius; vel.x = 0; hit = true; }
+      else if (vel.x < 0) { pos.x = b.maxX + radius; vel.x = 0; hit = true; }
+      else if (!this.grazesVertically(pos, height, b)) {
+        // Embedded with no horizontal intent → eject out the nearer face. Skipped
+        // for boxes the body only grazes from below/above (a ceiling/floor), which
+        // otherwise fling a player spawned under an overhang to the box's far edge.
+        pos.x = (pos.x - b.minX < b.maxX - pos.x) ? b.minX - radius : b.maxX + radius;
+        vel.x = 0;
+        hit = true;
+      }
     }
     return hit;
   }
@@ -497,19 +519,90 @@ export class CollisionWorld {
     let hit = false;
     for (const b of this.collBoxes) {
       if (!this.overlaps(pos, radius, height, b)) continue;
-      if (vel.z > 0) pos.z = b.minZ - radius;
-      else if (vel.z < 0) pos.z = b.maxZ + radius;
-      else pos.z = (pos.z - b.minZ < b.maxZ - pos.z) ? b.minZ - radius : b.maxZ + radius;
-      vel.z = 0;
-      hit = true;
+      if (vel.z > 0) { pos.z = b.minZ - radius; vel.z = 0; hit = true; }
+      else if (vel.z < 0) { pos.z = b.maxZ + radius; vel.z = 0; hit = true; }
+      else if (!this.grazesVertically(pos, height, b)) {
+        pos.z = (pos.z - b.minZ < b.maxZ - pos.z) ? b.minZ - radius : b.maxZ + radius;
+        vel.z = 0;
+        hit = true;
+      }
     }
     return hit;
+  }
+
+  /** True if box `b` only meets the capsule near its head (a ceiling) or feet (a
+   * floor) rather than spanning the body — used to suppress the sideways embed
+   * ejection so spawns under an overhang aren't flung to the box's far edge. */
+  private grazesVertically(pos: Vec3, height: number, b: AABB): boolean {
+    return b.minY >= pos.y + height - 0.25 || b.maxY <= pos.y + 0.25;
   }
 
   private overlapsAny(pos: Vec3, radius: number, height: number): boolean {
     for (const b of this.collBoxes) if (this.overlaps(pos, radius, height, b)) return true;
     for (const sc of this.shapes) if (this.overlapsShape(pos, radius, height, sc)) return true;
+    for (const o of this.obbs) if (this.overlapsOBB(pos, radius, height, o)) return true;
     return false;
+  }
+
+  /** True if no solid (box / platform / shape / Y-box) overlaps the capsule here. */
+  private capsuleFits(pos: Vec3, radius: number, height: number): boolean {
+    return !this.overlapsAny(pos, radius, height);
+  }
+
+  /** Cheap solid test of the capsule against a Y-rotated box. */
+  private overlapsOBB(pos: Vec3, radius: number, height: number, o: OBBY): boolean {
+    if (pos.y + height <= o.cy - o.hy || pos.y >= o.cy + o.hy) return false;
+    const rx = pos.x - o.cx, rz = pos.z - o.cz;
+    const lx = rx * o.cos - rz * o.sin, lz = rx * o.sin + rz * o.cos;
+    const clx = lx < -o.hx ? -o.hx : lx > o.hx ? o.hx : lx;
+    const clz = lz < -o.hz ? -o.hz : lz > o.hz ? o.hz : lz;
+    const ddx = lx - clx, ddz = lz - clz;
+    return ddx * ddx + ddz * ddz < radius * radius;
+  }
+
+  /**
+   * Highest collider top under a `radius` disc at (x,z) whose top lies in
+   * (loY, hiY] — the surface a stepping-up player would land on. Considers boxes,
+   * moving platforms, Y-boxes, cylinders/spheres/wedges and ramps. Null if none.
+   */
+  private topUnder(x: number, z: number, radius: number, loY: number, hiY: number): number | null {
+    let best: number | null = null;
+    const take = (top: number) => { if (top > loY && top <= hiY && (best === null || top > best)) best = top; };
+    for (const b of this.collBoxes) {
+      if (x - radius < b.maxX && x + radius > b.minX && z - radius < b.maxZ && z + radius > b.minZ) take(b.maxY);
+    }
+    for (const o of this.obbs) {
+      const rx = x - o.cx, rz = z - o.cz;
+      const lx = rx * o.cos - rz * o.sin, lz = rx * o.sin + rz * o.cos;
+      if (lx > -o.hx - radius && lx < o.hx + radius && lz > -o.hz - radius && lz < o.hz + radius) take(o.cy + o.hy);
+    }
+    for (const sc of this.shapes) {
+      if (sc.kind === "cylinder") {
+        if (Math.hypot(x - sc.cx, z - sc.cz) < (sc.hx + sc.hz) / 2 + radius) take(sc.cy + sc.hy);
+      } else if (sc.kind === "sphere") {
+        const R = (sc.hx + sc.hy + sc.hz) / 3;
+        if (Math.hypot(x - sc.cx, z - sc.cz) < R + radius) take(sc.cy + R);
+      } else {
+        const rx = x - sc.cx, rz = z - sc.cz;
+        const lx = rx * sc.cos - rz * sc.sin, lz = rx * sc.sin + rz * sc.cos;
+        if (lx > -sc.hx - radius && lx < sc.hx + radius && lz > -sc.hz - radius && lz < sc.hz + radius) {
+          const clx = lx < -sc.hx ? -sc.hx : lx > sc.hx ? sc.hx : lx;
+          take(sc.cy - sc.hy * (clx / sc.hx));
+        }
+      }
+    }
+    for (const r of this.ramps) {
+      if (x < r.minX - radius || x > r.maxX + radius || z < r.minZ - radius || z > r.maxZ + radius) continue;
+      const cx = x < r.minX ? r.minX : x > r.maxX ? r.maxX : x;
+      const cz = z < r.minZ ? r.minZ : z > r.maxZ ? r.maxZ : z;
+      let t: number;
+      if (r.dir === 0) t = (cx - r.minX) / (r.maxX - r.minX);
+      else if (r.dir === 1) t = (r.maxX - cx) / (r.maxX - r.minX);
+      else if (r.dir === 2) t = (cz - r.minZ) / (r.maxZ - r.minZ);
+      else t = (r.maxZ - cz) / (r.maxZ - r.minZ);
+      take(r.baseY + r.height * (t < 0 ? 0 : t > 1 ? 1 : t));
+    }
+    return best;
   }
 
   /** Cheap solid test of the player capsule against a shape (for step-up clearance). */
