@@ -387,7 +387,8 @@ body {
 }
 #fps {
   position: absolute;
-  top: 0.9rem;
+  /* Tucked just under the top-left radar. */
+  top: 13.4rem;
   left: 1.2rem;
   font-size: 0.8rem;
   color: var(--neon-cyan);
@@ -395,7 +396,7 @@ body {
 }
 #ping {
   position: absolute;
-  top: 2.1rem;
+  top: 14.6rem;
   left: 1.2rem;
   font-size: 0.8rem;
   color: var(--neon-cyan);
@@ -616,6 +617,53 @@ body {
   transition: opacity 0.4s;
 }
 #damage-flash.show { opacity: 1; transition: opacity 0s; }
+
+/* Low-HP red vignette (opacity driven from HUD.setHealth). */
+#vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6;
+  background: radial-gradient(ellipse at 50% 50%, transparent 42%, #c4001e66 76%, #ff0033cc 100%);
+  transition: opacity 0.25s ease-out;
+}
+
+/* Floating combat damage numbers (positioned per-frame from world space). */
+#damage-numbers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 8;
+}
+.dmg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-weight: bold;
+  font-size: 1.15rem;
+  color: #fff;
+  text-shadow: 0 0 4px #000, 0 1px 2px #000;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+.dmg.head {
+  color: #ffd33d;
+  font-size: 1.5rem;
+  text-shadow: 0 0 7px #ff8a00, 0 0 3px #000, 0 1px 2px #000;
+}
+
+/* Top-left radar. The canvas clips itself to a circle, so corners are clear. */
+#minimap {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0.92;
+  filter: drop-shadow(0 0 6px #0008);
+}
 
 #respawn {
   position: absolute;
@@ -1171,7 +1219,7 @@ body {
   background: radial-gradient(circle at 50% 40%, #141a2c, #05060c);
   border: 1px solid #ffffff14;
 }
-.lk-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 1rem; }
+.lk-pickers { display: grid; grid-template-columns: 1fr; gap: 0.35rem; }
 .lk-picker {
   display: flex;
   align-items: center;
@@ -1180,13 +1228,25 @@ body {
   letter-spacing: 0.06rem;
   opacity: 0.85;
 }
-.lk-picker input[type="color"] {
-  width: 42px;
-  height: 24px;
+.lk-mat { display: flex; align-items: center; gap: 0.4rem; }
+.lk-finish {
+  background: #0c0f1c;
+  color: var(--neon-cyan);
   border: 1px solid #ffffff33;
-  background: transparent;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.7rem;
+  padding: 2px 4px;
   cursor: pointer;
-  padding: 0;
+}
+.lk-picker input[type="color"] {
+  width: 40px;
+  height: 24px;
+  border: 1px solid var(--neon-cyan);
+  border-radius: 3px;
+  background: #000;
+  cursor: pointer;
+  padding: 1px;
 }
 .lk-reset {
   margin-top: 0.8rem;
@@ -1445,6 +1505,7 @@ body {
 }
 .ap-prow {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 0.4rem;
@@ -1453,7 +1514,10 @@ body {
   border-radius: 5px;
   padding: 0.3rem 0.45rem;
 }
-.ap-pname { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 0.3rem; }
+/* flex:1 1 8rem + min-width keep the name from collapsing to 0 (overflow:hidden
+   gives a flex item an auto min-size of 0); when the action buttons no longer
+   fit alongside it the row wraps them onto the next line instead of clipping. */
+.ap-pname { flex: 1 1 8rem; min-width: 8rem; font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 0.3rem; }
 .ap-pname em { color: #6f80a0; font-style: normal; font-size: 0.72rem; }
 .ap-pname .ap-admin-mark { color: #ffd23b; text-shadow: 0 0 6px #ffd23b88; font-size: 0.8rem; }
 .ap-pacts { display: flex; gap: 0.25rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }

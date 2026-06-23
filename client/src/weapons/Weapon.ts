@@ -4,19 +4,25 @@ import type { LocalPlayer } from "../entities/LocalPlayer.js";
 import type { RemotePlayers } from "../entities/RemotePlayers.js";
 import type { Network } from "../net/Network.js";
 import type { Particles } from "../render/Particles.js";
-import { resolveWeaponSkin } from "../render/cosmetics.js";
+import { resolveWeaponParts } from "../render/cosmetics.js";
+import { buildViewModel } from "../render/viewModelMesh.js";
 
 /** Equip time (s) — you can't fire for a moment after switching weapons. */
 const SWITCH_DELAY = 0.25;
 
 interface Tracer {
-  line: THREE.Line;
+  /** A thin bullet line, or a multi-mesh laser beam group (sniper). */
+  obj: THREE.Object3D;
   life: number;
+  ttl: number;
 }
 
 export interface WeaponCallbacks {
   onAmmo: (cur: number, max: number) => void;
   onHit: (head: boolean) => void;
+  /** Predicted damage dealt to one target this shot, at the world impact point
+   * (for floating damage numbers). Pellets on the same target are summed. */
+  onDamage?: (x: number, y: number, z: number, amount: number, head: boolean) => void;
   /** Reload progress for the HUD bar (0..1). active=false hides it. */
   onReloadState: (active: boolean, progress: number) => void;
   /** The held weapon changed (for the HUD label). */
@@ -136,134 +142,9 @@ export class Weapon {
       });
     }
 
-    const g = new THREE.Group();
-    // Apply the chosen weapon skin palette (Locker custom palette or default).
-    const sk = resolveWeaponSkin(this.def.id);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: sk.body, emissive: sk.emissive, emissiveIntensity: 0.25,
-      roughness: 0.4, metalness: 0.6,
-    });
-    const accentMat = new THREE.MeshStandardMaterial({
-      color: sk.accent, emissive: sk.accent, emissiveIntensity: 0.8,
-    });
-
-    // Shared materials for the polished gun models.
-    const metal = new THREE.MeshStandardMaterial({
-      color: sk.metal, emissive: sk.emissive, emissiveIntensity: 0.18, metalness: 0.8, roughness: 0.33,
-    });
-    const steel = new THREE.MeshStandardMaterial({ color: sk.steel, metalness: 0.85, roughness: 0.28 });
-    const glow = new THREE.MeshStandardMaterial({ color: sk.glow, emissive: sk.glow, emissiveIntensity: 1.6 });
-
-    const add = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
-      const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
-      me.position.set(x, y, z);
-      g.add(me);
-      return me;
-    };
-    // A cylinder aligned down the barrel (-z) by default.
-    const cyl = (r: number, len: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
-      const me = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 14), m);
-      me.rotation.x = Math.PI / 2;
-      me.position.set(x, y, z);
-      g.add(me);
-      return me;
-    };
-
-    let muzzleZ = -0.9;
-    switch (this.def.id) {
-      case "sniper": {
-        // Long-range marksman rifle: long fluted barrel, big scope, skeleton stock.
-        add(0.075, 0.11, 0.5, metal, 0, 0, -0.4);          // receiver
-        add(0.07, 0.035, 0.46, steel, 0, 0.075, -0.4);     // top rail
-        cyl(0.022, 0.98, metal, 0, 0.0, -1.0);             // long barrel
-        add(0.06, 0.06, 0.13, steel, 0, 0, -1.52);         // muzzle brake
-        add(0.072, 0.02, 0.1, accentMat, 0, 0.05, -1.52);  // brake accent
-        // Scope: tube on twin mounts, glowing objective + rear lens.
-        cyl(0.045, 0.46, metal, 0, 0.135, -0.5);
-        cyl(0.05, 0.04, glow, 0, 0.135, -0.735);           // front lens
-        cyl(0.047, 0.03, accentMat, 0, 0.135, -0.27);      // rear lens
-        add(0.03, 0.085, 0.04, metal, 0, 0.07, -0.62);     // front mount
-        add(0.03, 0.085, 0.04, metal, 0, 0.07, -0.38);     // rear mount
-        add(0.03, 0.03, 0.11, steel, 0.06, 0.0, -0.18);    // bolt handle
-        add(0.05, 0.12, 0.09, metal, 0, -0.13, -0.2);      // magazine
-        add(0.085, 0.06, 0.12, metal, 0, -0.1, -0.12);     // trigger guard
-        add(0.05, 0.15, 0.07, metal, 0, -0.12, 0.0).rotation.x = 0.5; // grip
-        add(0.05, 0.07, 0.28, metal, 0, -0.02, 0.0);       // stock
-        add(0.05, 0.13, 0.05, steel, 0, -0.05, 0.13);      // butt pad
-        muzzleZ = -1.6;
-        break;
-      }
-      case "shotgun": {
-        // Futuristic break-action double-barrel: over/under barrels, neon rib.
-        add(0.13, 0.13, 0.34, metal, 0, 0, -0.22);          // receiver block
-        add(0.13, 0.04, 0.32, steel, 0, 0.085, -0.22);      // top plate
-        cyl(0.042, 0.74, steel, 0, 0.048, -0.66);           // upper barrel
-        cyl(0.042, 0.74, steel, 0, -0.048, -0.66);          // lower barrel
-        add(0.022, 0.13, 0.62, metal, 0, 0.0, -0.62);       // rib between barrels
-        add(0.11, 0.018, 0.5, accentMat, 0, 0.0, -0.64);    // neon rib strip
-        add(0.075, 0.075, 0.06, steel, 0, 0.048, -1.02);    // upper muzzle
-        add(0.075, 0.075, 0.06, steel, 0, -0.048, -1.02);   // lower muzzle
-        cyl(0.024, 0.04, glow, 0, 0.048, -1.04);            // glowing core
-        cyl(0.024, 0.04, glow, 0, -0.048, -1.04);
-        add(0.12, 0.06, 0.07, accentMat, 0, -0.05, -0.03);  // break hinge
-        add(0.12, 0.07, 0.22, metal, 0, -0.06, -0.5);       // forend
-        add(0.055, 0.16, 0.08, metal, 0, -0.12, 0.06).rotation.x = 0.4; // grip
-        add(0.07, 0.11, 0.26, metal, 0, -0.01, 0.0);        // angular stock
-        add(0.07, 0.14, 0.05, accentMat, 0, -0.03, 0.12);   // butt accent
-        muzzleZ = -1.08;
-        break;
-      }
-      case "katana": {
-        // A proper neon katana: flat steel blade with a glowing cutting edge,
-        // a guard (tsuba), a wrapped handle (tsuka) and an angled tip (kissaki).
-        const steel = new THREE.MeshStandardMaterial({
-          color: 0xbfe6ff, emissive: sk.emissive, emissiveIntensity: 0.5, metalness: 0.9, roughness: 0.2,
-        });
-        const edgeMat = new THREE.MeshStandardMaterial({
-          color: sk.glow, emissive: sk.glow, emissiveIntensity: 1.9,
-        });
-        const wrap = new THREE.MeshStandardMaterial({ color: 0x12111a, roughness: 0.85 });
-
-        // Handle + pommel + wrap ridges.
-        add(0.05, 0.05, 0.30, wrap, 0, -0.02, 0.06);
-        add(0.066, 0.066, 0.04, accentMat, 0, -0.02, 0.21);
-        add(0.064, 0.064, 0.02, accentMat, 0, -0.02, 0.12);
-        add(0.064, 0.064, 0.02, accentMat, 0, -0.02, 0.02);
-        // Guard.
-        add(0.17, 0.14, 0.03, accentMat, 0, -0.01, -0.12);
-        // Blade + glowing edge, angled slightly up.
-        add(0.022, 0.10, 1.25, steel, 0, 0.02, -0.78).rotation.x = 0.04;
-        add(0.028, 0.03, 1.25, edgeMat, 0, -0.035, -0.78).rotation.x = 0.04;
-        // Angled tip.
-        add(0.022, 0.085, 0.18, steel, 0, 0.10, -1.46).rotation.x = 0.3;
-        muzzleZ = -1.5;
-        break;
-      }
-      default: {
-        // AK-pattern rifle: gunmetal receiver + barrel, amber furniture, banana mag.
-        const wood = new THREE.MeshStandardMaterial({
-          color: 0x6a3d1c, emissive: 0x180b04, emissiveIntensity: 0.25, metalness: 0.1, roughness: 0.75,
-        });
-        add(0.085, 0.12, 0.44, metal, 0, 0, -0.30);         // receiver
-        add(0.08, 0.035, 0.40, steel, 0, 0.08, -0.30);      // dust cover
-        add(0.05, 0.045, 0.05, metal, 0, 0.085, -0.14);     // rear sight block
-        add(0.085, 0.085, 0.24, wood, 0, -0.01, -0.60);     // lower handguard
-        add(0.055, 0.05, 0.22, wood, 0, 0.065, -0.58);      // upper handguard
-        cyl(0.013, 0.30, metal, 0, 0.085, -0.62);           // gas tube
-        cyl(0.02, 0.52, metal, 0, 0.015, -0.95);            // barrel
-        add(0.03, 0.075, 0.04, metal, 0, 0.085, -1.06);     // front sight post
-        add(0.05, 0.05, 0.10, steel, 0, 0.015, -1.22);      // slant muzzle brake
-        // Banana magazine — three segments curving forward-down.
-        add(0.06, 0.11, 0.12, metal, 0, -0.12, -0.15).rotation.x = 0.2;
-        add(0.058, 0.12, 0.11, metal, 0, -0.24, -0.19).rotation.x = 0.5;
-        add(0.052, 0.10, 0.10, metal, 0, -0.35, -0.25).rotation.x = 0.85;
-        add(0.055, 0.16, 0.075, metal, 0, -0.13, 0.04).rotation.x = 0.45; // pistol grip
-        add(0.05, 0.085, 0.24, wood, 0, -0.01, 0.02);       // stock
-        add(0.05, 0.13, 0.05, wood, 0, -0.03, 0.13);        // butt pad
-        add(0.088, 0.016, 0.30, accentMat, 0, 0.03, -0.30); // neon accent
-        muzzleZ = -1.25;
-      }
-    }
+    // Build the shared, skin-coloured model (identical to the Locker preview).
+    const parts = resolveWeaponParts(this.def.id);
+    const { group: g, muzzleZ } = buildViewModel(this.def.id, parts);
 
     this.muzzle.position.set(0, 0, muzzleZ);
     this.muzzleFlash.position.set(0, 0, muzzleZ);
@@ -396,6 +277,8 @@ export class Weapon {
     let anyHit = false;
     let anyHead = false;
     let wallHitPoint: THREE.Vector3 | undefined;
+    // Predicted damage per target this shot (pellets on the same enemy sum).
+    const dmgByTarget = new Map<number, { dmg: number; head: boolean; point: THREE.Vector3 }>();
 
     for (let i = 0; i < pellets; i++) {
       const dir = forward.clone();
@@ -406,7 +289,16 @@ export class Weapon {
       dirs.push({ x: dir.x, y: dir.y, z: dir.z });
 
       const r = this.castRay(origin, dir);
-      if (r.hit) { anyHit = true; anyHead = anyHead || r.head; }
+      if (r.hit) {
+        anyHit = true; anyHead = anyHead || r.head;
+        if (r.hitId >= 0) {
+          // Mirror the server's hitscan formula (no distance falloff for bullets).
+          const pelletDmg = this.def.damage * (r.head ? this.def.headshotMul : 1);
+          const cur = dmgByTarget.get(r.hitId);
+          if (cur) { cur.dmg += pelletDmg; cur.head = cur.head || r.head; cur.point.copy(r.hitPoint); }
+          else dmgByTarget.set(r.hitId, { dmg: pelletDmg, head: r.head, point: r.hitPoint.clone() });
+        }
+      }
       if (!wallHitPoint && r.wallPoint) wallHitPoint = r.wallPoint;
     }
 
@@ -433,6 +325,9 @@ export class Weapon {
     }
 
     if (anyHit) this.cb.onHit(anyHead);
+    for (const t of dmgByTarget.values()) {
+      this.cb.onDamage?.(t.point.x, t.point.y, t.point.z, Math.round(t.dmg), t.head);
+    }
     this.cb.onShoot(this.def.id);
 
     this.net.send({
@@ -448,7 +343,7 @@ export class Weapon {
   }
 
   /** Cast one pellet locally for tracer + hit feedback. Returns hit info. */
-  private castRay(origin: THREE.Vector3, dir: THREE.Vector3): { hit: boolean; head: boolean; wallPoint?: THREE.Vector3 } {
+  private castRay(origin: THREE.Vector3, dir: THREE.Vector3): { hit: boolean; head: boolean; hitId: number; hitPoint: THREE.Vector3; wallPoint?: THREE.Vector3 } {
     this.raycaster.set(origin, dir);
     this.raycaster.far = this.def.range;
 
@@ -486,7 +381,7 @@ export class Weapon {
     // muzzle (not the camera/eye) so it's visible — an eye-origin tracer runs
     // straight down the view axis and only shows up when strafing while firing.
     if (!this.def.melee) this.spawnTracer(this.muzzleWorld(), dir, hitPoint);
-    return { hit: hitId >= 0, head, wallPoint };
+    return { hit: hitId >= 0, head, hitId, hitPoint, wallPoint };
   }
 
   /** World position of the viewmodel's muzzle (barrel tip), for tracer origins. */
@@ -496,29 +391,68 @@ export class Weapon {
     return this.muzzleFlash.getWorldPosition(this.muzzleWorldVec);
   }
 
-  /** Render a tracer for a shot fired by another player. */
-  remoteShot(origin: THREE.Vector3, dir: THREE.Vector3) {
-    const end = origin.clone().addScaledVector(dir, this.def.range);
+  /** Render a tracer for a shot fired by another player (their weapon id picks
+   * the visual — e.g. a sniper draws its laser beam, not a bullet streak). */
+  remoteShot(origin: THREE.Vector3, dir: THREE.Vector3, weaponId = this.def.id) {
+    const range = WEAPONS[weaponId]?.range ?? this.def.range;
+    const end = origin.clone().addScaledVector(dir, range);
     this.raycaster.set(origin, dir);
-    this.raycaster.far = this.def.range;
+    this.raycaster.far = range;
     const hits = this.raycaster.intersectObjects(this.colliders, false);
     if (hits.length) {
       end.copy(hits[0].point);
       this.particles.impact(end, { x: dir.x, y: dir.y, z: dir.z });
     }
-    this.spawnTracer(origin, dir, end);
+    this.spawnTracer(origin, dir, end, weaponId);
   }
 
-  private spawnTracer(origin: THREE.Vector3, _dir: THREE.Vector3, end: THREE.Vector3) {
+  private spawnTracer(origin: THREE.Vector3, _dir: THREE.Vector3, end: THREE.Vector3, weaponId = this.def.id) {
+    // The sniper is a raygun — draw a glowing laser beam instead of a bullet
+    // streak. Tint a local shot with the player's own Energy/Core skin colour.
+    if (weaponId === "sniper") {
+      // Tint a local shot with the player's chosen sniper lens/energy colour.
+      let color = 0x18e0ff;
+      if (weaponId === this.def.id) {
+        const parts = resolveWeaponParts("sniper");
+        color = (parts.find((p) => p.key === "lens") ?? parts[parts.length - 1]).color;
+      }
+      this.spawnLaser(origin, end, color);
+      return;
+    }
     const geo = new THREE.BufferGeometry().setFromPoints([origin.clone(), end]);
-    const mat = new THREE.LineBasicMaterial({
-      color: 0xfff2b0,
-      transparent: true,
-      opacity: 0.9,
-    });
+    const mat = new THREE.LineBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.9 });
+    mat.userData.base = 0.9;
     const line = new THREE.Line(geo, mat);
     this.scene.add(line);
-    this.tracers.push({ line, life: 0.08 });
+    this.tracers.push({ obj: line, life: 0.08, ttl: 0.08 });
+    if (this.tracers.length > 40) this.killTracer(0);
+  }
+
+  /** A glowing laser beam (white-hot core + coloured glow sheath) from the muzzle
+   * to the impact point — the sniper's raygun bolt. Fades over its lifetime. */
+  private spawnLaser(origin: THREE.Vector3, end: THREE.Vector3, color: number) {
+    const dir = end.clone().sub(origin);
+    const len = dir.length();
+    if (len < 0.05) return;
+    const group = new THREE.Group();
+    const mid = origin.clone().addScaledVector(dir, 0.5);
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    const beam = (radius: number, col: number, opacity: number) => {
+      const geo = new THREE.CylinderGeometry(radius, radius, len, 8, 1, true);
+      const mat = new THREE.MeshBasicMaterial({
+        color: col, transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      mat.userData.base = opacity;
+      const m = new THREE.Mesh(geo, mat);
+      m.quaternion.copy(quat);
+      m.position.copy(mid);
+      m.raycast = () => {};
+      group.add(m);
+    };
+    beam(0.06, color, 0.5);      // coloured glow sheath
+    beam(0.02, 0xffffff, 0.95);  // white-hot core
+    this.scene.add(group);
+    this.tracers.push({ obj: group, life: 0.16, ttl: 0.16 });
     if (this.tracers.length > 40) this.killTracer(0);
   }
 
@@ -529,12 +463,15 @@ export class Weapon {
   }
 
   private updateEffects(dt: number) {
-    // Tracer fade.
+    // Tracer fade (each material fades from its own base opacity).
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       const t = this.tracers[i];
       t.life -= dt;
-      const mat = t.line.material as THREE.LineBasicMaterial;
-      mat.opacity = Math.max(0, t.life / 0.08) * 0.9;
+      const k = Math.max(0, t.life / t.ttl);
+      t.obj.traverse((o) => {
+        const mat = (o as THREE.Mesh | THREE.Line).material as THREE.Material & { opacity: number } | undefined;
+        if (mat) mat.opacity = (mat.userData.base ?? 0.9) * k;
+      });
       if (t.life <= 0) this.killTracer(i);
     }
 
@@ -619,9 +556,13 @@ export class Weapon {
 
   private killTracer(i: number) {
     const t = this.tracers[i];
-    this.scene.remove(t.line);
-    t.line.geometry.dispose();
-    (t.line.material as THREE.Material).dispose();
+    this.scene.remove(t.obj);
+    t.obj.traverse((o) => {
+      const mesh = o as THREE.Mesh | THREE.Line;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mat = mesh.material as THREE.Material | undefined;
+      if (mat) mat.dispose();
+    });
     this.tracers.splice(i, 1);
   }
 }
