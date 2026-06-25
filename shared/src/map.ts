@@ -547,6 +547,52 @@ export const DUST2: GameMap = {
   ],
 };
 
+/**
+ * "Test Chamber" — a slope/ramp stress map for custom games. Five ramp lanes of
+ * increasing steepness (gradient 0.33 → 2.0, all 12-long footprints) each lead
+ * onto a landing platform, with a long open runway in front so you can slide /
+ * bhop into them at full speed and confirm you never phase through. Extras: a
+ * `wedge` prop (the solid sloped primitive), a raised ramp you can walk *under*,
+ * and a jump pad that flings you up a slope.
+ */
+export const TEST_CHAMBER: GameMap = {
+  name: "Test Chamber",
+  bounds: 44,
+  spawns: [
+    v(-30, 0, -24), v(-30, 0, -12), v(-30, 0, 0), v(-30, 0, 12), v(-30, 0, 24),
+    v(-34, 0, 0), v(-34, 0, -16), v(-34, 0, 16),
+  ],
+  boxes: [
+    ...shell(44, 10),
+    // Five landing platforms — near edge flush at the ramp top (x=6), top set a
+    // touch below the ramp crest so the last step onto them is within step height
+    // even on the steep lanes (a box that overlapped the slope would wall it off).
+    plat(12, -24, 12, 8, 3.2, CYAN),   // lane A grad 0.33 (H 4)
+    plat(12, -12, 12, 8, 7.2, GREEN),  // lane B grad 0.67 (H 8)
+    plat(12, 0, 12, 8, 11.2, AMBER),   // lane C grad 1.0 (H 12)
+    plat(12, 12, 12, 8, 17.2, PINK),   // lane D grad 1.5 (H 18)
+    plat(12, 24, 12, 8, 23.2, CYAN),   // lane E grad 2.0 (H 24, near-vertical)
+    // A solid wedge prop off to the side (slope rises toward -x).
+    { pos: v(-18, 2, -34), size: v(10, 4, 6), color: SLATE3, emissive: CYAN, shape: "wedge" },
+    // Approach platform at the raised ramp's low edge (top y4); the floor stays
+    // clear beneath the ramp so you can walk UNDER it.
+    plat(37, -34, 6, 6, 4, AMBER),
+    // Low cover for slide tests on the runway.
+    { pos: v(-20, 1, 8), size: v(2, 2, 2), color: SLATE3, emissive: PINK },
+  ],
+  ramps: [
+    ramp(0, -24, 12, 8, 0, 4, 0, CYAN),   // grad 0.33
+    ramp(0, -12, 12, 8, 0, 8, 0, GREEN),  // grad 0.67
+    ramp(0, 0, 12, 8, 0, 12, 0, AMBER),   // grad 1.0
+    ramp(0, 12, 12, 8, 0, 18, 0, PINK),   // grad 1.5
+    ramp(0, 24, 12, 8, 0, 24, 0, CYAN),   // grad 2.0
+    ramp(28, -34, 8, 6, 4, 4, 1, AMBER),  // raised (baseY 4) — open underneath
+  ],
+  pads: [
+    pad(-24, 0, 0, 8, 16, 0, GREEN), // fling east up lane C's slope
+  ],
+};
+
 export const MAPS: Record<string, GameMap> = {
   neon_yard: NEON_YARD,
   overdrive: OVERDRIVE,
@@ -555,4 +601,5 @@ export const MAPS: Record<string, GameMap> = {
   atrium: ATRIUM,
   skyhaven: SKYHAVEN,
   dust2: DUST2,
+  test_chamber: TEST_CHAMBER,
 };

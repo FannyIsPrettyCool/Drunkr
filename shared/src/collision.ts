@@ -344,9 +344,33 @@ export class CollisionWorld {
       grounded = grounded || r.grounded;
       hitWall = hitWall || r.hitWall;
     }
-    // Ramps are walkable surfaces only (the slope is followed by rampGround after
-    // the move) — their underside is intentionally open so you can walk beneath a
-    // raised ramp / slope.
+    // --- Ramps (heightfield slope) ---
+    // Snap the feet onto the ramp surface, resolved *inside the sub-step loop* and
+    // as a swept one-way floor. A plain "feet are below the surface" test can't
+    // tell a fast climber (who sank below the surface this step) from someone
+    // walking *under* a raised end — both sit below the surface. So we use the
+    // pre-move snapshot (sx,sy,sz): you only get snapped up if you were on the
+    // slope's *top side* last sub-step. That makes an arbitrarily steep/fast climb
+    // unable to out-run the snap (no phase-through) while leaving the open
+    // underside walkable. Jumps (vel.y > 0.5) clear it.
+    if (this.ramps.length && vel.y <= 0.5) {
+      const newSurf = this.rampGround(pos);
+      if (newSurf !== null && pos.y <= newSurf + 0.05) {
+        const oldSurf = this.rampGround({ x: sx, y: sy, z: sz });
+        const cameFromTop =
+          // Already on/above the slope last step → keep snapping, however much the
+          // surface climbed this step (steep + fast can't sink through).
+          (oldSurf !== null && sy >= oldSurf - 0.1) ||
+          // Just entered the footprint near surface height (the toe / stepping on),
+          // not deep beneath the raised high end.
+          (oldSurf === null && pos.y >= newSurf - 0.6);
+        if (cameFromTop) {
+          pos.y = newSurf;
+          if (vel.y < 0) vel.y = 0;
+          grounded = true;
+        }
+      }
+    }
 
     return { grounded, hitWall };
   }
@@ -453,8 +477,9 @@ export class CollisionWorld {
     const surfY = sc.cy - sc.hy * (clx / sc.hx);
     if (feet > surfY + 0.05) return { grounded: false, hitWall: false }; // above the slope
 
-    const penUp = surfY - feet;
-    const penDown = head - (sc.cy - sc.hy);
+    const bottom = sc.cy - sc.hy;     // flat underside
+    const penUp = surfY - feet;       // raise feet onto the sloped surface
+    const penDown = head - bottom;    // drop head below the underside
 
     let nlx: number, nlz: number, horizPen: number;
     if (inside) {
@@ -470,14 +495,26 @@ export class CollisionWorld {
       horizPen = radius - dist;
     }
 
-    const canStep = penUp <= step && penUp >= -0.06 && vel.y <= 0.5;
-    if (canStep && penUp <= penDown) {
+    // Walk up / stand on the slope: snap the feet onto the surface when the sloped
+    // face is the *shallowest* exit and we're on its top side (feet above the
+    // underside). The old code gated this on `penUp <= step`, but a fast / bhop
+    // climb advances pos.x before this runs, so the surface can rise more than a
+    // step in one move — that made the climb skip the snap and fall into the
+    // down-eject below, which teleports the player to `bottom - height` (the
+    // underside) = flung straight through the floor (the wedge "launch across the
+    // map" bug). Comparing penUp to horizPen instead keeps the steep back/side
+    // faces acting as walls (there horizPen is the shallow exit). `step` unused.
+    void step;
+    const onTopSide = feet >= bottom - 0.05;
+    if (onTopSide && vel.y <= 0.5 && penUp <= horizPen && penUp <= penDown) {
       pos.y = surfY;
       if (vel.y < 0) vel.y = 0;
       return { grounded: true, hitWall: false };
     }
+    // Bonk the underside: only when genuinely beneath the prism (its flat bottom
+    // is the shallowest exit), never as a fallback for a missed surface snap.
     if (penDown <= horizPen && penDown >= 0) {
-      pos.y = sc.cy - sc.hy - height;
+      pos.y = bottom - height;
       if (vel.y > 0) vel.y = 0;
       return { grounded: false, hitWall: false };
     }
